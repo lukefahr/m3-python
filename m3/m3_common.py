@@ -19,12 +19,17 @@ import queue as Queue
 import time
 import threading
 
+from pdb import set_trace as bp
+
+import struct
+
 # if Py2K:
 import imp
 
 from . import m3_logging
-logger = m3_logging.get_logger(__name__)
-logger.debug('Got m3_common.py logger')
+#logger = m3_logging.get_logger(__name__)
+#logger.debug('Got m3_common.py logger')
+logger = m3_logging.getGlobalLogger()
 
 from .ice import ICE
 from .ice_simulator import _FAKE_SERIAL_CONNECTTO_ENDPOINT
@@ -369,9 +374,10 @@ class m3_common(object):
         # This parser object supplies common options to all subparsers
         self.parent_parser = argparse.ArgumentParser(add_help=False)
 
-        self.parent_parser.add_argument('-s', "--serial",
-                default='autodetect',
-                help="Path to ICE serial device")
+        # does not work if added here, so added later
+        #self.parent_parser.add_argument('-s', "--serial",
+        #        default='autodetect',
+        #        help="Path to ICE serial device")
 
         self.parent_parser.add_argument('-w', '--wait-for-messages',
                 action='store_true',
@@ -393,6 +399,10 @@ class m3_common(object):
                 action='store_true',
                 help='Enable debugging messages.')
 
+        self.parser.add_argument('-s', "--serial",
+                default='autodetect',
+                help="Path to ICE serial device")
+
 
     def parse_args(self):
         self.parser = argparse.ArgumentParser(
@@ -404,14 +414,21 @@ class m3_common(object):
         self.add_parse_args()
 
         self.args = self.parser.parse_args()
+        
+        #want to do this before any calls to logger.*
+        if (self.args.debug): 
+            logger.info ('Setting logging to DEBUG ')
+            m3_logging.GlobalLoggerSetLevel('debug' )
+            logger.debug('Debug Set')
+        else:
+            logger.info ('Setting logging to INFO')
+            m3_logging.GlobalLoggerSetLevel('info' )
+            
         if self.args.serial == 'autodetect':
             self.serial_path = self.guess_serial()
         else:
+            logger.debug('Found serial flag, setting to: ' + str(self.args.serial))
             self.serial_path = self.args.serial
-
-        if (self.args.debug): 
-            logger.info ('Setting logging to DEBUG ')
-            m3_logging.LoggerSetLevel('Debug')
 
         # XXX This is a bit of a hack
         if 'goc_version' in self.args:
@@ -818,6 +835,115 @@ class ein_programmer(object):
 
         logger.info("Programming validated successfully")
         return True
+
+class mbus_programmer( ein_programmer):
+
+    TITLE = "MBUS Programmer"
+    DESCRIPTION = "Tool to program M3 chips using the MBUS protocol."
+    MSG_TYPE = 'b+'
+
+    def __init__(self, m3_ice):
+        super(mbus_programmer,self).__init__(m3_ice)
+        #self.m3_ice = m3_ice
+        #self.m3_ice.read_binfile(self.m3_ice.args.BINFILE)
+
+    def cmd(self):
+        self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
+        self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
+        logger.info("** Setting ICE MBus controller to slave mode")
+        self.m3_ice.ice.mbus_set_master_onoff(False)
+
+        logger.info("")
+        logger.info("Would you like to run after programming? If you do not")
+        logger.info("have EIN Debug start the program, you will be prompted")
+        logger.info("to send the start message via MBus at the end instead")
+        logger.info("")
+        self.m3_ice.run_after = False
+        self.m3_ice.do_default("Run program when programming finishes?",
+                lambda: setattr(self.m3_ice, 'run_after', True))
+
+        #prc_addr = ((0x01 << 4) | (0x02))  
+        #logger.info(hex(prc_addr))
+        prc_addr = struct.pack("B", ((0x01 << 4) | (0x02)) ) 
+        print ( 'prc_addr: ' + binascii.hexlify(prc_addr))
+        logger.info('PRC_addr: ' + binascii.hexlify(prc_addr))
+        mem_addr = struct.pack("<I", 0)
+        payload = struct.pack("<IIII", 1, 2, 3, 4);
+        data = mem_addr + payload 
+        print ( 'data: ' + data )
+        self.m3_ice.ice.mbus_send(prc_addr, data)
+        raise Exception()
+
+
+
+
+        message = self.m3_ice.build_injection_message(hexencoded_data=self.m3_ice.hexencoded, run_after=self.m3_ice.run_after)
+        logger.debug("Sending: " + message)
+        self.m3_ice.ice.ein_send(message.decode('hex'))
+
+        logger.info("")
+        logger.info("Programming complete.")
+        logger.info("")
+
+        if self.m3_ice.run_after:
+            logger.info("Program is running on the chip")
+        else:
+            self.m3_ice.do_default("Would you like to read back the program to validate?", self.validate_bin)
+            self.m3_ice.do_default("Would you like to send the DMA start interrupt?", self.DMA_start_interrupt)
+
+
+#    def DMA_start_interrupt(self):
+#        logger.info("Sending 0x88 0x00000000")
+#        self.m3_ice.ice.mbus_send("88".decode('hex'), "00000000".decode('hex'))
+#
+#    def validate_bin(self): #, hexencoded, offset=0):
+#        raise NotImplementedError("Need to update for MBus. Let me know if needed.")
+#        logger.info("Configuring ICE to ACK adress 1001 100x")
+#        ice.i2c_set_address("1001100x") # 0x98
+#
+#        logger.info("Running Validation sequence:")
+#        logger.info("\t DMA read at address 0x%x, length %d" % (offset, len(hexencoded)/2))
+#        logger.info("\t<Receive I2C message for DMA data>")
+#        logger.info("\tCompare received data and validate it was programmed correctly")
+#
+#        length = len(hexencoded)/8
+#        offset = offset
+#        data = 0x80000000 | (length << 16) | offset
+#        dma_read_req = "%08X" % (socket.htonl(data))
+#        logger.debug("Sending: " + dma_read_req)
+#        ice.i2c_send(0xaa, dma_read_req.decode('hex'))
+#
+#        logger.info("Chip Program Dump Response:")
+#        chip_bin = validate_q.get(True, ice.ONEYEAR)
+#        logger.debug("Raw chip bin response len " + str(len(chip_bin)))
+#        chip_bin = chip_bin.encode('hex')
+#        logger.debug("Chip bin len %d val: %s" % (len(chip_bin), chip_bin))
+#
+#        #1,2-addr ...
+#        chip_bin = chip_bin[2:]
+#
+#        # Consistent capitalization
+#        chip_bin = chip_bin.upper()
+#        hexencoded = hexencoded.upper()
+#
+#        for b in range(len(hexencoded)):
+#            try:
+#                if hexencoded[b] != chip_bin[b]:
+#                    logger.warn("ERR: Mismatch at half-byte" + str(b))
+#                    logger.warn("Expected:" + hexencoded[b])
+#                    logger.warn("Got:" + chip_bin[b])
+#                    return False
+#            except IndexError:
+#                logger.warn("ERR: Length mismatch")
+#                logger.warn("Expected %d bytes" % (len(hexencoded)/2))
+#                logger.warn("Got %d bytes" % (len(chip_bin)/2))
+#                logger.warn("All prior bytes validated correctly")
+#                return False
+#
+#        logger.info("Programming validated successfully")
+#        return True
+#
+
 
 
 class mbus_snooper(object):

@@ -18,9 +18,11 @@ import struct
 import sys
 import time
 
-from . import m3_logging
-logger = m3_logging.get_logger(__name__)
-logger.debug('Got ice.py logger')
+#from . import m3_logging
+#logger = m3_logging.get_logger(__name__)
+#logger.debug('Got ice.py logger')
+from .m3_logging import getGlobalLogger 
+logger = getGlobalLogger()
 
 try:
     import threading
@@ -1083,7 +1085,8 @@ class ICE(object):
         if type(addr) != bytes:
             addr = bytes(addr, 'utf-8')
         if len(addr) > 4:
-            raise self.FormatError("Address too long")
+            raise self.FormatError("Address too long: " + str(addr) +\
+                                    ' len:' + str(len(addr)))
         while len(addr) < 4:
             zero = bytes(1)
             addr = zero + addr
@@ -1341,6 +1344,13 @@ class ICE(object):
         DEFAULT: OFF
         '''
         self.min_version(0.2)
+        if isinstance(onoff, str):
+            onoff = True if onoff in \
+                    ['On', 'on'] else False
+        elif isinstance(onoff, bool):
+            pass
+        else: raise Exception("Bad arg for " + __name__ )
+
         msg = struct.pack("BB", ord('m'), onoff)
         self.send_message_until_acked('m', msg)
 

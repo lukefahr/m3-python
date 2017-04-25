@@ -13,9 +13,13 @@ from .m3_common import m3_common
 from .m3_common import mbus_snooper
 from .m3_common import ein_programmer
 from .m3_common import goc_programmer
+from .m3_common import mbus_programmer
 
-from .m3_logging import get_logger
-logger = get_logger(__name__)
+
+#from .m3_logging import get_logger
+#logger = get_logger(__name__)
+from .m3_logging import getGlobalLogger 
+logger = getGlobalLogger()
 
 class m3_ice(m3_common):
     TITLE = "M3 ICE Interface"
@@ -70,6 +74,14 @@ class m3_ice(m3_common):
         self.goc_programmer = goc_programmer(self, self.parser_goc)
         self.parser_goc.set_defaults(func=self.cmd_goc)
 
+        self.parser_mbus = self.subparsers.add_parser('mbus',
+                parents=[self.parent_parser],
+                help='Send commands via the MBUS protocol')
+        mbus_programmer.add_parse_args(self.parser_mbus)
+        self.parser_mbus.set_defaults(func=self.cmd_mbus)
+
+            
+
     def cmd_softreset(self):
         self.ice.power_set_onoff(self.ice.POWER_0P6, False)
         time.sleep(.5)
@@ -111,6 +123,10 @@ class m3_ice(m3_common):
     def cmd_goc(self):
         #goc_programmer(self).cmd()
         pass
+
+    def cmd_mbus(self):
+        mbus = mbus_programmer(self)
+        mbus.cmd()
 
 
 def cmd():

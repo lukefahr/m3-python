@@ -3,6 +3,9 @@
 
 import os
 import logging
+
+#from pdb import set_trace as bp
+
 logging.captureWarnings(True)
 
 TRACE_LEVEL=25
@@ -12,6 +15,7 @@ def split_line_logger(lvl, self, message, *args, **kwargs):
 	#print('lvl: {}, message: {}'.format(lvl, message))
 	for msg in message.split('\n'):
 		if self.isEnabledFor(lvl):
+			#self._log(lvl, msg, args, **kwargs)
 			self._log(lvl, msg, args, **kwargs)
 
 #for lvl,logger in (
@@ -105,15 +109,22 @@ def get_logger(name):
 	return l
 
 def log_level_from_environment():
-	try:
+	return logging.DEBUG
 		os.environ['ICE_DEBUG']
 		return logging.DEBUG
 	except KeyError:
 		return logging.INFO
 
-def LoggerSetLevel(lvl):
+logger = get_logger(__name__)
+
+def getGlobalLogger():
+    return logger
+
+def GlobalLoggerSetLevel(lvl):
     if lvl in ['DEBUG', 'Debug', 'debug']:
-       logger.setLevel = logging.DEBUG
+       logger.setLevel ( logging.DEBUG)
+    elif lvl in ['INFO', 'Info', 'info']:
+       logger.setLevel ( logging.INFO)
     else: raise Exception('unsupported level')
 
-logger = get_logger(__name__)
+
