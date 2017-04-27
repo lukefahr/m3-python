@@ -18,11 +18,8 @@ import struct
 import sys
 import time
 
-#from . import m3_logging
-#logger = m3_logging.get_logger(__name__)
-#logger.debug('Got ice.py logger')
-from .m3_logging import getGlobalLogger 
-logger = getGlobalLogger()
+from . import m3_logging
+logger = m3_logging.getGlobalLogger()
 
 try:
     import threading
@@ -500,9 +497,9 @@ class ICE(object):
             try:
                 logger.warn("No handler registered for B++ (formatted, snooped MBus) messages")
                 logger.warn("Dropping message:")
-                logger.warn("\taddr: " + addr.decode('hex'))
-                logger.warn("\tdata: " + data.decode('hex'))
-                logger.warn("\tstat: " + cb.decode('hex'))
+                logger.warn("\taddr: " + binascii.hexlify(addr))
+                logger.warn("\tdata: " + binascii.hexlify(data))
+                logger.warn("\tstat: " + binascii.hexlify(cb))
                 logger.warn("")
             except Exception as e:
                 logger.warn("Unhandled exception trying to report missing B++ handler.")
@@ -848,7 +845,7 @@ class ICE(object):
         '''
         Blinks a message via GOC.
 
-        Takes a raw byte stream (e.g. "0xaa".decode('hex')).
+        Takes a raw byte stream (e.g. binascii.unhexlify("aa")).
         Returns the number of bytes actually sent.
 
         Long messages may be fragmented between the ICE library and the ICE
@@ -1449,7 +1446,7 @@ class ICE(object):
         '''
         Sends a message via the EIN Debug port.
 
-        Takes a raw byte stream (e.g. "0xaa".decode('hex')).
+        Takes a raw byte stream (e.g. binascii.unhexlify("aa")).
         Returns the number of bytes actually sent.
 
         Long messages may be fragmented between the ICE library and the ICE

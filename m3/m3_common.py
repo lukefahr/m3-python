@@ -26,9 +26,9 @@ import struct
 # if Py2K:
 import imp
 
+from . import __version__ 
+
 from . import m3_logging
-#logger = m3_logging.get_logger(__name__)
-#logger.debug('Got m3_common.py logger')
 logger = m3_logging.getGlobalLogger()
 
 from .ice import ICE
@@ -57,7 +57,7 @@ def printing_sleep(seconds):
 class m3_common(object):
     TITLE = "Generic M3 Programmer"
     DESCRIPTION = None
-    EPILOG = None
+    EPILOG = "m3_ice version {}".format(__version__)
 
     def default_value(self, prompt, default, extra=None, invert=False):
         if invert and (extra is None):
@@ -374,35 +374,23 @@ class m3_common(object):
         # This parser object supplies common options to all subparsers
         self.parent_parser = argparse.ArgumentParser(add_help=False)
 
-        # does not work if added here, so added later
-        #self.parent_parser.add_argument('-s', "--serial",
-        #        default='autodetect',
-        #        help="Path to ICE serial device")
-
-        self.parent_parser.add_argument('-w', '--wait-for-messages',
-                action='store_true',
-                help="Wait for messages (hang) when done.")
-
-        self.parent_parser.add_argument('-y', '--yes',
-                action='store_true',
-                help="Use default values for all prompts.")
-
-        # does not work if added here, so added later
-        #self.parent_parser.add_argument('-dbg', '--debug', 
-        #        default=False,
-        #        help='Enable debugging messages.')
-
-
-
+       
     def add_parse_args(self):
-        self.parser.add_argument('-dbg', '--debug', 
-                action='store_true',
-                help='Enable debugging messages.')
-
         self.parser.add_argument('-s', "--serial",
                 default='autodetect',
                 help="Path to ICE serial device")
 
+        self.parser.add_argument('-w', '--wait-for-messages',
+                action='store_true',
+                help="Wait for messages (hang) when done.")
+
+        self.parser.add_argument('-y', '--yes',
+                action='store_true',
+                help="Use default values for all prompts.")
+
+        self.parser.add_argument('-dbg', '--debug', 
+                action='store_true',
+                help='Enable debugging messages.')
 
     def parse_args(self):
         self.parser = argparse.ArgumentParser(
@@ -414,21 +402,29 @@ class m3_common(object):
         self.add_parse_args()
 
         self.args = self.parser.parse_args()
-        
-        #want to do this before any calls to logger.*
+
+        #this needs to come before calls to logger.*
+        #try to find debug flag
         if (self.args.debug): 
-            logger.info ('Setting logging to DEBUG ')
-            m3_logging.GlobalLoggerSetLevel('debug' )
-            logger.debug('Debug Set')
+            m3_logging.LoggerSetLevel('Debug')
+            logger.debug('Found debug flag, setting logging=DEBUG ')
         else:
-            logger.info ('Setting logging to INFO')
-            m3_logging.GlobalLoggerSetLevel('info' )
-            
+            # or try to find ICE_DEBUG in env
+            try:
+                os.environ['ICE_DEBUG']
+                m3_logging.LoggerSetLevel('Debug')
+                logger.debug('found ICE_DEBUG in env, ' + 
+                                'setting logging=DEBUG ')
+            #otherwise default to logging level info                
+            except KeyError:
+                m3_logging.LoggerSetLevel('Info')
+
         if self.args.serial == 'autodetect':
             self.serial_path = self.guess_serial()
         else:
-            logger.debug('Found serial flag, setting to: ' + str(self.args.serial))
+            logger.debug('Found serial='+self.args.serial)
             self.serial_path = self.args.serial
+
 
         # XXX This is a bit of a hack
         if 'goc_version' in self.args:
@@ -502,7 +498,7 @@ class m3_common(object):
                 hexencoded += line[0:2].upper()
         else:
             binfd = open(binfile, 'rb')
-            hexencoded = binfd.read().encode("hex").upper()
+            hexencoded = binascii.hexlify(binfd.read()).upper()
 
         if (len(hexencoded) % 4 == 0) and (len(hexencoded) % 8 != 0):
             # Image is halfword-aligned. Some tools generate these, but our system
@@ -645,9 +641,9 @@ class goc_programmer(object):
         addr = addr.replace('0x', '')
         # Flip the order of addr bytes to make human entry friendly
         # TODO: The encode/decode at various points is a bit silly?
-        addr = addr.decode('hex')
+        addr = binascii.unhexlify(addr)
         addr = addr[::-1]
-        addr = addr.encode('hex')
+        addr = binascii.hexlify(addr)
         addr = int(addr, 16)
 
         data = self.m3_ice.args.MESSAGE
@@ -657,9 +653,9 @@ class goc_programmer(object):
 
         # Flip the order of data bytes
         # TODO: The encode/decode at various points is a bit silly?
-        data = data.decode('hex')
+        data = binascii.unhexlify(data)
         data = data[::-1]
-        data = data.encode('hex')
+        data = binascii.hexlify(data)
 
         if self.m3_ice.args.dont_run_after:
             run_after = False
@@ -716,7 +712,7 @@ class goc_programmer(object):
 #        passcode_string = "3935"   # Reset request
         logger.info("Sending passcode to GOC")
         logger.debug("Sending:" + passcode_string)
-        self.m3_ice.ice.goc_send(passcode_string.decode('hex'))
+        self.m3_ice.ice.goc_send(binascii.unhexlify(passcode_string))
         printing_sleep(0.5)
 
     def set_fast_frequency(self):
@@ -725,13 +721,13 @@ class goc_programmer(object):
     def send_goc_message(self, message):
         logger.info("Sending GOC message")
         logger.debug("Sending: " + message)
-        self.m3_ice.ice.goc_send(message.decode('hex'))
+        self.m3_ice.ice.goc_send(binascii.unhexlify(message))
         printing_sleep(0.5)
 
         logger.info("Sending extra blink to end transaction")
         extra = "80"
         logger.debug("Sending: " + extra)
-        self.m3_ice.ice.goc_send(extra.decode('hex'))
+        self.m3_ice.ice.goc_send(binascii.unhexlify(extra))
 
     def validate_bin(self):
         raise NotImplementedError("If you need this, let me know")
@@ -739,7 +735,7 @@ class goc_programmer(object):
     def DMA_start_interrupt(self):
         raise NotImplementedError("If you need this, let me know")
         #logger.info("Sending 0x88 0x00000000")
-        #self.send("88".decode('hex'), "00000000".decode('hex'))
+        #self.send(binascii.unhexlify("88"), binascii.unhexlify("00000000"))
 
 
 class ein_programmer(object):
@@ -773,7 +769,7 @@ class ein_programmer(object):
 
         message = self.m3_ice.build_injection_message(hexencoded_data=self.m3_ice.hexencoded, run_after=self.m3_ice.run_after)
         logger.debug("Sending: " + message)
-        self.m3_ice.ice.ein_send(message.decode('hex'))
+        self.m3_ice.ice.ein_send(binascii.unhexlify(message))
 
         logger.info("")
         logger.info("Programming complete.")
@@ -787,7 +783,7 @@ class ein_programmer(object):
 
     def DMA_start_interrupt(self):
         logger.info("Sending 0x88 0x00000000")
-        self.m3_ice.ice.mbus_send("88".decode('hex'), "00000000".decode('hex'))
+        self.m3_ice.ice.mbus_send(binascii.unhexlify("88"), binascii.unhexlify("00000000"))
 
     def validate_bin(self): #, hexencoded, offset=0):
         raise NotImplementedError("Need to update for MBus. Let me know if needed.")
@@ -804,12 +800,12 @@ class ein_programmer(object):
         data = 0x80000000 | (length << 16) | offset
         dma_read_req = "%08X" % (socket.htonl(data))
         logger.debug("Sending: " + dma_read_req)
-        ice.i2c_send(0xaa, dma_read_req.decode('hex'))
+        ice.i2c_send(0xaa, binascii.unhexlify(dma_read_req))
 
         logger.info("Chip Program Dump Response:")
         chip_bin = validate_q.get(True, ice.ONEYEAR)
         logger.debug("Raw chip bin response len " + str(len(chip_bin)))
-        chip_bin = chip_bin.encode('hex')
+        chip_bin = binascii.hexlify(chip_bin)
         logger.debug("Chip bin len %d val: %s" % (len(chip_bin), chip_bin))
 
         #1,2-addr ...
@@ -998,7 +994,7 @@ class mbus_snooper(object):
                 + "  (ACK: " + str(not cb1) + ")")
 
     def callback_csv(self, _time, address, data, cb0, cb1):
-        self._csv_writer.writerow((_time, address.encode('hex'), data.encode('hex'), cb0, cb1))
+        self._csv_writer.writerow((_time, binascii.hexlify(address), binascii.hexlify(data), cb0, cb1))
 
     def __init__(self, args, ice, callbacks=None):
         self.args = args
