@@ -74,7 +74,7 @@ class m3_ice(m3_common):
         self.parser_mbus = self.subparsers.add_parser('mbus',
                 parents=[self.parent_parser],
                 help='Send commands via the MBUS protocol')
-        mbus_programmer.add_parse_args(self.parser_mbus)
+        self.mbus_programmer = mbus_programmer(self,self.parser_mbus)
         self.parser_mbus.set_defaults(func=self.cmd_mbus)
 
             
@@ -122,8 +122,7 @@ class m3_ice(m3_common):
         pass
 
     def cmd_mbus(self):
-        mbus = mbus_programmer(self)
-        mbus.cmd()
+        self.mbus_programmer.cmd()
 
 
 def cmd():

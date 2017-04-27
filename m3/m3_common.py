@@ -832,16 +832,26 @@ class ein_programmer(object):
         logger.info("Programming validated successfully")
         return True
 
-class mbus_programmer( ein_programmer):
+class mbus_programmer( object):
 
     TITLE = "MBUS Programmer"
     DESCRIPTION = "Tool to program M3 chips using the MBUS protocol."
-    MSG_TYPE = 'b+'
+    #MSG_TYPE = 'b+'
 
-    def __init__(self, m3_ice):
-        super(mbus_programmer,self).__init__(m3_ice)
-        #self.m3_ice = m3_ice
-        #self.m3_ice.read_binfile(self.m3_ice.args.BINFILE)
+    def __init__(self, m3_ice, parser):
+        self.m3_ice = m3_ice
+        self.parser = parser
+        self.add_parse_args(parser)
+
+    def add_parse_args(self, parser):
+
+        parser.add_argument('prefix',
+                help="Which short MBUS address should we program?, e.g. 0xA",
+                default=None
+                )
+        
+        parser.add_argument('BINFILE', help="Program to flash over MBUS",
+                )
 
     def cmd(self):
         self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
@@ -851,41 +861,42 @@ class mbus_programmer( ein_programmer):
 
         logger.info("")
         logger.info("Would you like to run after programming? If you do not")
-        logger.info("have EIN Debug start the program, you will be prompted")
+        logger.info("have MBUS Debug start the program, you will be prompted")
         logger.info("to send the start message via MBus at the end instead")
         logger.info("")
         self.m3_ice.run_after = False
         self.m3_ice.do_default("Run program when programming finishes?",
                 lambda: setattr(self.m3_ice, 'run_after', True))
+      
 
-        #prc_addr = ((0x01 << 4) | (0x02))  
-        #logger.info(hex(prc_addr))
-        prc_addr = struct.pack("B", ((0x01 << 4) | (0x02)) ) 
-        print ( 'prc_addr: ' + binascii.hexlify(prc_addr))
-        logger.info('PRC_addr: ' + binascii.hexlify(prc_addr))
-        mem_addr = struct.pack("<I", 0)
-        payload = struct.pack("<IIII", 1, 2, 3, 4);
+        #pull prc_addr from command line
+        # and convert to binary
+        prc_addr = self.m3_ice.args.prefix
+        prc_addr = int( prc_addr, 16)
+        if (prc_addr > 0xF): raise Exception("Bad PRC Addr")
+        logger.debug('PRC Addr: ' + hex(prc_addr))
+
+        mbus_addr = struct.pack("B", ((prc_addr << 4) | (0x02)) ) 
+        logger.info('MBUS_addr: ' + binascii.hexlify(mbus_addr))
+        mem_addr = struct.pack("I", 0)
+        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
+        payload = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
         data = mem_addr + payload 
-        print ( 'data: ' + data )
-        self.m3_ice.ice.mbus_send(prc_addr, data)
-        raise Exception()
+        logger.debug( 'data: ' + data )
 
+        logger.debug("Sending... ")
+        self.m3_ice.ice.mbus_send(mbus_addr, data)
 
-
-
-        message = self.m3_ice.build_injection_message(hexencoded_data=self.m3_ice.hexencoded, run_after=self.m3_ice.run_after)
-        logger.debug("Sending: " + message)
-        self.m3_ice.ice.ein_send(message.decode('hex'))
 
         logger.info("")
         logger.info("Programming complete.")
         logger.info("")
 
-        if self.m3_ice.run_after:
-            logger.info("Program is running on the chip")
-        else:
-            self.m3_ice.do_default("Would you like to read back the program to validate?", self.validate_bin)
-            self.m3_ice.do_default("Would you like to send the DMA start interrupt?", self.DMA_start_interrupt)
+        #if self.m3_ice.run_after:
+        #    logger.info("Program is running on the chip")
+        #else:
+        #    self.m3_ice.do_default("Would you like to read back the program to validate?", self.validate_bin)
+        #    self.m3_ice.do_default("Would you like to send the DMA start interrupt?", self.DMA_start_interrupt)
 
 
 #    def DMA_start_interrupt(self):
