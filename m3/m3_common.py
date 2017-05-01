@@ -875,16 +875,28 @@ class mbus_programmer( object):
         prc_addr = int( prc_addr, 16)
         if (prc_addr > 0xF): raise Exception("Bad PRC Addr")
         logger.debug('PRC Addr: ' + hex(prc_addr))
-
         mbus_addr = struct.pack("B", ((prc_addr << 4) | (0x02)) ) 
         logger.info('MBUS_addr: ' + binascii.hexlify(mbus_addr))
+
+        # tell CPU what to do on a halt
+        logger.debug('FIXME:  CONFIG_HALT_CPU')
+
+        # triggering a CPU HALT
+        mem_addr = struct.pack("I", 0xAFFFF000) # Address of FORCE_HALT
+        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
+        payload  = struct.pack("I", 0xCAFEF00D) #Special Incantation to cause halt
+        data = mem_addr + payload
+        logger.debug("Sending HALT signal... ")
+        self.m3_ice.ice.mbus_send(mbus_addr, data)
+        
+
+        # bulk write of program
         mem_addr = struct.pack("I", 0)
         logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
         payload = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
         data = mem_addr + payload 
-        logger.debug( 'data: ' + data )
-
-        logger.debug("Sending... ")
+        #logger.debug( 'data: ' + data )
+        logger.debug("Sending Program... ")
         self.m3_ice.ice.mbus_send(mbus_addr, data)
 
 
