@@ -287,10 +287,12 @@ class ICE(object):
 
     def useful_read(self, length):
         b = self.dev.read(length)
+        #print ( type(b))
         while len(b) < length:
             r = self.dev.read(length - len(b))
             b += r
         assert len(b) == length
+        logger.debug('Raw Read: ' + binascii.hexlify(b) )
         return b
 
     def communicator(self):
@@ -1719,5 +1721,13 @@ class ICE(object):
 
         self.send_message_until_acked('p', struct.pack("BBB", ord('o'), rail, onoff))
 
+
+    def _raw_send_bytes(self, passcode, msg):
+        if (passcode != 'BadIdeaV3'):
+            raise exception("Do not use this!")
+        print('WARNING:  sending raw message: ', binascii.hexlify(msg))
+        self.dev.write(msg)
+
 if __name__ == '__main__':
     logger.setLevel(level=logging.DEBUG)
+

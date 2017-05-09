@@ -867,7 +867,39 @@ class mbus_programmer( object):
         self.m3_ice.run_after = False
         self.m3_ice.do_default("Run program when programming finishes?",
                 lambda: setattr(self.m3_ice, 'run_after', True))
-      
+
+        logger.warn("ANDREW: START")
+
+        raw_bytes_str = '620e08f0123450deadbeef'
+        raw_bytes = bytes.fromhex(raw_bytes_str)
+        self.m3_ice.ice._raw_send_bytes("BadIdeaV3", raw_bytes)
+        logger.info('Sent raw mbus write: ' + binascii.hexlify(raw_bytes) )
+
+        raw_bytes_str = '620f08f0123450deadbeef'
+        raw_bytes = bytes.fromhex(raw_bytes_str)
+        self.m3_ice.ice._raw_send_bytes("BadIdeaV3", raw_bytes)
+        logger.info('Sent raw mbus write: ' + binascii.hexlify(raw_bytes) )
+
+
+        #pull prc_addr from command line
+        # and convert to binary
+        prc_addr = '0xA'
+        prc_addr = int( prc_addr, 16)
+        logger.debug('PRC Addr: ' + hex(prc_addr))
+        mbus_short_addr = (prc_addr << 4 | 0x02)
+        mbus_long_addr = 0xf << 28 | mbus_short_addr
+        mbus_addr = struct.pack(">I", mbus_long_addr)
+        logger.info('MBUS_addr: ' + binascii.hexlify(mbus_addr))
+        mem_addr = struct.pack(">I", 0xadd2add2) 
+        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
+        payload  = struct.pack(">I", 0xdeadbeef) 
+        data = mem_addr + payload
+        logger.debug('Data: ' + binascii.hexlify(data))
+        self.m3_ice.ice.mbus_send(mbus_addr, data)
+        raise Exception() 
+
+        logger.warn("ANDREW: END")
+
 
         #pull prc_addr from command line
         # and convert to binary
@@ -882,16 +914,16 @@ class mbus_programmer( object):
         logger.debug('FIXME:  CONFIG_HALT_CPU')
 
         # triggering a CPU HALT
-        mem_addr = struct.pack("I", 0xAFFFF000) # Address of FORCE_HALT
+        mem_addr = struct.pack(">I", 0xAFFFF000) # Address of FORCE_HALT
         logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
-        payload  = struct.pack("I", 0xCAFEF00D) #Special Incantation to cause halt
+        payload  = struct.pack(">I", 0xCAFEF00D) #Special Incantation to cause halt
         data = mem_addr + payload
         logger.debug("Sending HALT signal... ")
         self.m3_ice.ice.mbus_send(mbus_addr, data)
         
 
         # bulk write of program
-        mem_addr = struct.pack("I", 0)
+        mem_addr = struct.pack(">I", 0)
         logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
         payload = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
         data = mem_addr + payload 
