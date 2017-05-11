@@ -103,6 +103,16 @@ class ICE(object):
             self.capabilities = capabilities
             super(ICE.CapabilityError, self).__init__()
 
+    class TimeoutError(ICE_Error):
+        ''' 
+        A method was called that attempted to read more bytes than the Serial
+        interface had available within the timeout window
+        '''
+        def __init__(self, _timeout, _partial_data):
+            self.timeout = _timeout
+            self.partial_data = _partial_data
+            super(ICE.CapabilityError, self).__init__()
+
     ## Support decorators:
     def min_proto_version(version):
         '''
@@ -200,7 +210,9 @@ class ICE(object):
         The ICE object configuration (e.g. message handlers) cannot be safely
         changed after this method is invoked.
         '''
-        self.dev = serial.Serial(serial_device, baudrate, timeout=.1)
+
+        #1ms timeout for serial to help catch runaway packets
+        self.dev = serial.Serial(serial_device, baudrate, timeout=.001)
         if self.dev.isOpen():
             logger.info("Connected to serial device at " + self.dev.portstr)
         else:
@@ -286,15 +298,18 @@ class ICE(object):
                 logger.debug("Suppressed.")
 
     def useful_read(self, length):
-        b = self.dev.read(length)
-        #print ( type(b))
+        rxBuf = b''
         while len(b) < length:
-            r = self.dev.read(length - len(b))
-            b += r
-        assert len(b) == length
-        logger.debug('Raw Read: ' + binascii.hexlify(b) )
+            rx = self.dev.read(length - len(b))
+            if rx == 0: #timeout occured
+                raise TimeoutError(self.dev.timeout, rxBuf)
+            else: # add to the buffer
+                rxBuf += rx
+    
+        assert len(rxBuf) == length
+        logger.debug('Raw Read: ' + binascii.hexlify(rxBuf) )
         return b
-
+       
     def communicator(self):
         while not self.communicator_stop_request.isSet():
             try:
@@ -303,13 +318,20 @@ class ICE(object):
                 msg_type, event_id, length = self.useful_read(3)
             except ValueError:
                 continue
+            except TimeoutError:
+                logger.warn("WARNING:  timeout error occured, skipping rest of packet!")
+                continue
             except (serial.SerialException, OSError):
                 break
             msg_type = ord(msg_type)
             event_id = ord(event_id)
             length = ord(length)
             #print("Got msg type", msg_type, chr(msg_type), length)
-            msg = self.useful_read(length)
+            try:
+                msg = self.useful_read(length)
+            except TimeoutError:
+                logger.warn("WARNING:  timeout error occured, skipping rest of packet!")
+                continue
             #print(msg.encode('hex'))
 
             if event_id == self.last_event_id:
