@@ -17,6 +17,7 @@ import socket
 import struct
 import sys
 import time
+import os
 
 from . import m3_logging
 logger = m3_logging.getGlobalLogger()
@@ -111,7 +112,7 @@ class ICE(object):
         def __init__(self, _timeout, _partial_data):
             self.timeout = _timeout
             self.partial_data = _partial_data
-            super(ICE.CapabilityError, self).__init__()
+            super(ICE.TimeoutError, self).__init__()
 
     ## Support decorators:
     def min_proto_version(version):
@@ -198,6 +199,8 @@ class ICE(object):
         self.msg_handler['B+'] = self.B_formatter
         self.msg_handler['b+'] = self.b_formatter
 
+        self.msg_handler['e'] = self.e_handler
+
         self.goc_ein_toggle = -1
 
         # Set initial, minimal capability set
@@ -211,8 +214,8 @@ class ICE(object):
         changed after this method is invoked.
         '''
 
-        #1ms timeout for serial to help catch runaway packets
-        self.dev = serial.Serial(serial_device, baudrate, timeout=.001)
+        #5ms timeout for serial to help catch runaway packets
+        self.dev = serial.Serial(serial_device, baudrate, timeout=.005)
         if self.dev.isOpen():
             logger.info("Connected to serial device at " + self.dev.portstr)
         else:
@@ -297,18 +300,20 @@ class ICE(object):
                 logger.debug(str(e))
                 logger.debug("Suppressed.")
 
-    def useful_read(self, length):
+    def useful_read(self, length, check_timeout = False):
         rxBuf = b''
-        while len(b) < length:
-            rx = self.dev.read(length - len(b))
-            if rx == 0: #timeout occured
-                raise TimeoutError(self.dev.timeout, rxBuf)
+        while len(rxBuf) < length:
+            rx = self.dev.read(length - len(rxBuf))
+
+            if check_timeout and len(rx) == 0: #timeout occured
+                raise self.TimeoutError(self.dev.timeout, rxBuf)
+
             else: # add to the buffer
                 rxBuf += rx
     
         assert len(rxBuf) == length
         logger.debug('Raw Read: ' + binascii.hexlify(rxBuf) )
-        return b
+        return rxBuf 
        
     def communicator(self):
         while not self.communicator_stop_request.isSet():
@@ -318,9 +323,6 @@ class ICE(object):
                 msg_type, event_id, length = self.useful_read(3)
             except ValueError:
                 continue
-            except TimeoutError:
-                logger.warn("WARNING:  timeout error occured, skipping rest of packet!")
-                continue
             except (serial.SerialException, OSError):
                 break
             msg_type = ord(msg_type)
@@ -328,9 +330,9 @@ class ICE(object):
             length = ord(length)
             #print("Got msg type", msg_type, chr(msg_type), length)
             try:
-                msg = self.useful_read(length)
-            except TimeoutError:
-                logger.warn("WARNING:  timeout error occured, skipping rest of packet!")
+                msg = self.useful_read(length, check_timeout = True)
+            except self.TimeoutError:
+                logger.warn("Timeout error occured, skipping rest of packet!")
                 continue
             #print(msg.encode('hex'))
 
@@ -535,6 +537,15 @@ class ICE(object):
         else:
             handler(addr, data)
 
+    @min_proto_version("0.4")
+    def e_handler(self, msg_type, event_id, length, msg):
+        '''
+        Helper function for the 'e' command, exit
+
+        '''
+        logger.info('Caught "e" command, shutting down')
+        #sys.exit(0)
+        os._exit( int(binascii.hexlify(msg) ,16) )
 
     def send_message(self, msg_type, msg='', length=None):
         if type(msg_type) != bytes:
