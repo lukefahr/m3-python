@@ -21,7 +21,7 @@ from m3.ice import ICE
 import m3.ice_simulator
 import m3.m3_ice
 
-class TestTransactions(object):
+class TestBaud(object):
     class TestFailedException(Exception):
         #logger.info('='*42 + '\nTEST FAILED\n' + '='*42)
         pass
@@ -40,7 +40,8 @@ class TestTransactions(object):
         os.environ['ICE_NOSLEEP'] = '1'
         sim_args = m3.ice_simulator.Simulator.get_parser().parse_args([
                                         #'-s ' + serial_port, 
-                                        '-t ' + filedir +'/transactions/timeout.trx'])
+                                        #'-t ' + filedir +'/transactions/timeout.trx',
+                                        ])
 
         cls.sim_thread = threading.Thread(
                 target=m3.ice_simulator.Simulator(args=sim_args).run,
@@ -51,27 +52,40 @@ class TestTransactions(object):
 
         time.sleep(0.5)
 
-        #cls.ice = ICE()
-        #cls.ice.connect(com2)
-        #cls.ice.connect(serial_port)
 
     @classmethod
     def teardown_class(cls):
         m3.ice_simulator.destroy_fake_serial()
 
-    def test_timeout(self):
-        logger.info("Testing Timeout Feature") 
+    def test_baudrate(self):
+        logger.info("Testing Baudrate Feature") 
+        baudrate = 115200
+        
+        # baudrate of 2000000 not supported
+        # baudrate = 2000000
 
         serial_port=m3.ice_simulator._FAKE_SERIAL_CONNECTTO_ENDPOINT
         print ('Using ' + str(serial_port))
         self.driver = m3.m3_ice.m3_ice(['--debug',
+                                    '--baudrate', str(baudrate),
                                     '-s '+ serial_port,
                                     'snoop'])
-        self.driver.cmd_snoop()
-        
+
+        # just something to test baudrate
+        logger.info("Test power on/off")
+        self.driver.ice.power_set_onoff(self.driver.ice.POWER_VBATT, True)
+        if self.driver.ice.power_get_onoff(self.driver.ice.POWER_VBATT) != True:
+            logger.error("Set/get mismatch VBATT power")
+        self.driver.ice.power_set_onoff(self.driver.ice.POWER_1P2, True)
+        if self.driver.ice.power_get_onoff(self.driver.ice.POWER_1P2) != True:
+            logger.error("Set/get mismatch 1.2 V power")
+        self.driver.ice.power_set_onoff(self.driver.ice.POWER_0P6, True)
+        if self.driver.ice.power_get_onoff(self.driver.ice.POWER_0P6) != True:
+            logger.error("Set/get mismatch 0.6 V power")
+
+
         
         # I have no idea how this works.....
-
 
 
 if __name__ == '__main__':
@@ -79,7 +93,7 @@ if __name__ == '__main__':
         logger.info("USAGE: %s SERIAL_DEVICE\n" % (sys.argv[0]))
         sys.exit(2)
 
-    i = ICETests(serial_port=sys.argv[1])
+    i = TestBaud (serial_port=sys.argv[1])
 
     logger.info('')
     logger.info('Begin running tests')

@@ -13,6 +13,7 @@ import binascii
 from copy import copy
 import errno
 import functools
+import os
 import socket
 import struct
 import sys
@@ -206,6 +207,42 @@ class ICE(object):
         # Set initial, minimal capability set
         self.capabilities = 'VvXx'
 
+    def find_baud(self, serial_device):
+       
+        # we're only trying these
+        baudrates = [  115200, 2000000] 
+        version_request = binascii.unhexlify('560000')
+        found = False
+        
+        with serial.Serial(serial_device, baudrates[0], 
+                    timeout=0.05 ) as tmpSerial:
+
+            if not tmpSerial.isOpen():
+                raise self.ICE_Error("Failed to connect to temporary serial device")
+
+            for baudrate in baudrates:
+
+                logger.debug('Trying baudrate: ' + str(baudrate))
+                try:
+                    tmpSerial.baudrate = baudrate
+                except IOError: 
+                    logger.debug("Error changing baudrate, assuming socat port")
+                    found = baudrate
+                    break
+                       
+                # send a version request and see what happens
+                tmpSerial.write(version_request)
+                rxBytes = tmpSerial.read(5) #see if this times out
+                if len(rxBytes) != 0: 
+                    found = baudrate
+                    break
+            
+        if not found:
+            raise Exception("Unable to determine baudrate!")
+
+        logger.debug ("Found Baudrate: " + str(baudrate) )
+        return found 
+
     def connect(self, serial_device, baudrate=115200):
         '''
         Opens a connection to the ICE board.
@@ -213,6 +250,8 @@ class ICE(object):
         The ICE object configuration (e.g. message handlers) cannot be safely
         changed after this method is invoked.
         '''
+
+        logger.debug('Connecting at: ' + str(baudrate) )
 
         #5ms timeout for serial to help catch runaway packets
         self.dev = serial.Serial(serial_device, baudrate, timeout=.005)
@@ -283,6 +322,7 @@ class ICE(object):
                 logger.warn("Suppressed.")
             return
         try:
+            
             handler(msg_type, event_id, length, msg)
         except self.NotConnectedError:
             # The ICE board can send async messages before the library is set up
@@ -541,7 +581,6 @@ class ICE(object):
     def e_handler(self, msg_type, event_id, length, msg):
         '''
         Helper function for the 'e' command, exit
-
         '''
         logger.info('Caught "e" command, shutting down')
         #sys.exit(0)
