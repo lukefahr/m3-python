@@ -330,11 +330,15 @@ class m3_common(object):
 
         try:
             self.print_banner()
-            self.parse_args(args_list)
+            self._parse_args(args_list)
             self.ice = ICE()
             self.callback_q = Queue.Queue()
-            #Messes up mbus_snooper, why was this here?
-            #self.install_handler()
+
+            #here for backwards compatability
+            try:
+                self.install_handler()
+            except AttributeError:
+                pass
             
             if (self.args.baudrate == 'autodetect'):
                 self.args.baudrate = self.ice.find_baud(self.serial_path)
@@ -362,15 +366,13 @@ class m3_common(object):
         self.ice.goc_set_onoff(False)
         self.ice.power_set_onoff(self.ice.POWER_GOC, True)
 
-    def install_handler(self):
-        self.ice.msg_handler[self.MSG_TYPE] = self.callback_helper
-
-    def callback_helper(self, msg_type, event_id, length, msg):
-        logger.debug("Callback: msg len " + str(len(msg)))
-        if len(msg) == 0:
-            logger.debug("Ignore msg of len 0")
-            return
-        self.callback_q.put(msg)
+    # Andrew:  no longer used
+    #def callback_helper(self, msg_type, event_id, length, msg):
+    #    logger.debug("Callback: msg len " + str(len(msg)))
+    #    if len(msg) == 0:
+    #        logger.debug("Ignore msg of len 0")
+    #        return
+    #    self.callback_q.put(msg)
 
     def print_banner(self):
         logger.info("-" * 80)
@@ -403,7 +405,12 @@ class m3_common(object):
                 action='store_true',
                 help='Enable debugging messages.')
 
-    def parse_args(self, args_list =None):
+    # cannot break this API
+    def parse_args(self):
+        return _parse_args(self)
+
+    # private version of parse_args
+    def _parse_args(self, args_list =None):
         self.parser = argparse.ArgumentParser(
                 formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                 description=self.DESCRIPTION,
@@ -1101,11 +1108,6 @@ class mbus_snooper(object):
         self.ice.B_formatter_control_bits = True
         self.ice.msg_handler['B++'] = self._callback
         self.ice.msg_handler['b++'] = self._callback
-
-        #self.ice.ice_set_baudrate_to_2000000()
-        #def _atexit_reset_baudrate():
-        #    self.ice.ice_set_baudrate_to_115200()
-        #atexit.register(_atexit_reset_baudrate)
 
         self.ice.mbus_set_internal_reset(True)
         self.ice.mbus_set_master_onoff(False)
