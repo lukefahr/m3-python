@@ -251,9 +251,9 @@ class ICE(object):
         changed after this method is invoked.
         '''
 
-        #50ms timeout for serial to help catch runaway packets
+        #500ms timeout for serial to help catch runaway packets
         # cygwin cannot support 5ms timeouts 
-        self.dev = serial.Serial(serial_device, baudrate, timeout=.05)
+        self.dev = serial.Serial(serial_device, baudrate, timeout=.5)
         if self.dev.isOpen():
             logger.info("Connected to serial device at " + self.dev.portstr + 
                 " at " + str(baudrate) + " baud")
