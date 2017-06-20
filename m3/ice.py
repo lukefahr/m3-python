@@ -1800,6 +1800,9 @@ class ICE(object):
         print('WARNING:  sending raw message: ', binascii.hexlify(msg))
         self.dev.write(msg)
 
+        # Ugly hack so python allows keyboard interrupts
+        return self.sync_queue.get(True, self.ONEYEAR)
+
 if __name__ == '__main__':
     logger.setLevel(level=logging.DEBUG)
 

@@ -555,8 +555,8 @@ class m3_common(object):
         self.ice.power_set_onoff(0,True)
         if wait_for_rails_to_settle:
             printing_sleep(1.0)
-            logger.info("Waiting 8 seconds for power rails to settle")
-            printing_sleep(8.0)
+            logger.info("Waiting 2 seconds for power rails to settle")
+            printing_sleep(2.0)
 
     def reset_m3(self):
         logger.info("M3 0.6V => OFF (reset controller)")
@@ -858,6 +858,8 @@ class mbus_programmer( object):
 
     TITLE = "MBUS Programmer"
     DESCRIPTION = "Tool to program M3 chips using the MBUS protocol."
+    DEFAULT_PRC_PREFIX = '0x1'
+
     #MSG_TYPE = 'b+'
 
     def __init__(self, m3_ice, parser):
@@ -867,155 +869,128 @@ class mbus_programmer( object):
 
     def add_parse_args(self, parser):
 
-        parser.add_argument('prefix',
-                help="Which short MBUS address should we program?, e.g. 0xA",
-                default=None
+        parser.add_argument('-p', '--short-prefix',
+                help="Which short MBUS address of the PRC to be programmed? e.g. 0x1",
+                default=mbus_programmer.DEFAULT_PRC_PREFIX,
                 )
-        
+
         parser.add_argument('BINFILE', help="Program to flash over MBUS",
                 )
 
     def cmd(self):
         self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
         self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
+
         logger.info("** Setting ICE MBus controller to slave mode")
         self.m3_ice.ice.mbus_set_master_onoff(False)
 
-        logger.info("")
-        logger.info("Would you like to run after programming? If you do not")
-        logger.info("have MBUS Debug start the program, you will be prompted")
-        logger.info("to send the start message via MBus at the end instead")
-        logger.info("")
-        self.m3_ice.run_after = False
-        self.m3_ice.do_default("Run program when programming finishes?",
-                lambda: setattr(self.m3_ice, 'run_after', True))
+        logger.info("** Disabling ICE MBus snoop mode")
+        self.m3_ice.ice.mbus_set_snoop(False)
 
-        logger.warn("ANDREW: START")
-
-        raw_bytes_str = '620e08f0123450deadbeef'
-        raw_bytes = bytes.fromhex(raw_bytes_str)
-        self.m3_ice.ice._raw_send_bytes("BadIdeaV3", raw_bytes)
-        logger.info('Sent raw mbus write: ' + binascii.hexlify(raw_bytes) )
-
-        raw_bytes_str = '620f08f0123450deadbeef'
-        raw_bytes = bytes.fromhex(raw_bytes_str)
-        self.m3_ice.ice._raw_send_bytes("BadIdeaV3", raw_bytes)
-        logger.info('Sent raw mbus write: ' + binascii.hexlify(raw_bytes) )
-
+        #logger.info("Triggering MBUS internal reset")
+        #self.m3_ice.ice.mbus_set_internal_reset(True)
+        #self.m3_ice.ice.mbus_set_internal_reset(False)
 
         #pull prc_addr from command line
         # and convert to binary
-        prc_addr = '0xA'
-        prc_addr = int( prc_addr, 16)
-        logger.debug('PRC Addr: ' + hex(prc_addr))
-        mbus_short_addr = (prc_addr << 4 | 0x02)
-        mbus_long_addr = 0xf << 28 | mbus_short_addr
-        mbus_addr = struct.pack(">I", mbus_long_addr)
-        logger.info('MBUS_addr: ' + binascii.hexlify(mbus_addr))
-        mem_addr = struct.pack(">I", 0xadd2add2) 
+        prc_addr = int(self.m3_ice.args.short_prefix, 16)
+
+        if (prc_addr > 0x0 and prc_addr < 0xf):
+            mbus_short_addr = (prc_addr << 4 | 0x02)
+            mbus_addr = struct.pack(">I", mbus_short_addr)
+        elif (prc_addr > 0xf and prc_addr < 0xf0000): raise Exception("Bad MBUS Addr")
+        elif (prc_addr >= 0xf0000 and prc_addr < 0xfffff):
+            raise Exception("Only short prefixes supported")
+            #mbus_addr = struct.pack(">I", mbus_long_addr)
+        if (prc_addr > 0xfffff): raise Exception("Bad MBUS Addr")
+
+        logger.info('MBus_PRC_Addr: ' + binascii.hexlify(mbus_addr))
+
+        # 0x0 = mbus register write
+        mbus_regwr = struct.pack(">I", ( mbus_addr << 4) | 0x0 ) 
+        # 0x2 = memory write
+        mbus_memwr = struct.pack(">I", ( mbus_addr << 4) | 0x2 ) 
+
+        # number of bytes per packet (must be < 256)
+        chunk_size_bytes = 128 
+        # actual binfile is hex characters (1/2 byte), so twice size
+        chunk_size_chars = chunk_size_bytes * 2
+
+        ## lower CPU reset 
+        ## This won't work until PRCv16+
+            #RUN_CPU = 0xA0000040  # Taken from PRCv14_PREv14.pdf page 19. 
+            #mem_addr = struct.pack(">I", RUN_CPU) 
+        # instead use the RUN_CPU MBUS register
+        mbus_addr = struct.pack(">I", ( mbus_addr << 4) | 0x0 ) 
+        data= struct.pack(">I", 0x10000000) 
+        logger.debug("raising RESET signal... ")
         logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
-        payload  = struct.pack(">I", 0xdeadbeef) 
-        data = mem_addr + payload
-        logger.debug('Data: ' + binascii.hexlify(data))
-        self.m3_ice.ice.mbus_send(mbus_addr, data)
-        raise Exception() 
+        self.m3_ice.ice.mbus_send(mbus_regwr, data)
 
-        logger.warn("ANDREW: END")
+        # load the program
+        logger.debug ( 'loading binfile: '  + self.m3_ice.args.BINFILE) 
+        datafile = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
+
+        # split file into chunks, pair each chunk with an address, 
+        # then write each addr,chunk over mbus
+        logger.debug ( 'splitting binfile into ' + str(chunk_size_bytes) 
+                            + ' byte chunks')
+        payload_chunks = self.split_transmission(datafile, chunk_size_chars)
+        #/2 converts to byes
+        payload_addrs = range(0, len(datafile)/2, chunk_size_bytes) 
+
+        for mem_addr, payload in zip(payload_addrs, payload_chunks):
+            print ('mem_addr:' + str(mem_addr))
+
+            mem_addr = struct.pack(">I", mem_addr)
+            logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
+
+            # convert to hex
+            payload = binascii.unhexlify(payload)
+
+            # then switch endian-ness
+            # https://docs.python.org/2/library/struct.html
+            bigE= '>' +  str(int(len(payload)/4)) + 'I' # words = bytes/4
+            litE= '<' + str(int(len(payload)/4)) + 'I' 
+            # unpack little endian, repack big endian
+            payload = struct.pack(bigE, * struct.unpack(litE, payload))
+            logger.debug('Payload: ' + binascii.hexlify(payload))
+
+            data = mem_addr + payload 
+            #logger.debug( 'data: ' + binascii.hexlify(data ))
+            logger.debug("Sending Packet... ")
+            self.m3_ice.ice.mbus_send(mbus_memwr, data)
+
+        time.sleep(0.1)
 
 
-        #pull prc_addr from command line
-        # and convert to binary
-        prc_addr = self.m3_ice.args.prefix
-        prc_addr = int( prc_addr, 16)
-        if (prc_addr > 0xF): raise Exception("Bad PRC Addr")
-        logger.debug('PRC Addr: ' + hex(prc_addr))
-        mbus_addr = struct.pack("B", ((prc_addr << 4) | (0x02)) ) 
-        logger.info('MBUS_addr: ' + binascii.hexlify(mbus_addr))
+        # @TODO: add code here to verify the write? 
 
-        # tell CPU what to do on a halt
-        logger.debug('FIXME:  CONFIG_HALT_CPU')
-
-        # triggering a CPU HALT
-        mem_addr = struct.pack(">I", 0xAFFFF000) # Address of FORCE_HALT
-        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
-        payload  = struct.pack(">I", 0xCAFEF00D) #Special Incantation to cause halt
-        data = mem_addr + payload
-        logger.debug("Sending HALT signal... ")
-        self.m3_ice.ice.mbus_send(mbus_addr, data)
+        #mbus_addr = struct.pack(">I", 0x00000013) 
+        #read_req = struct.pack(">I",  0x0A000080) 
+        #dma_addr = struct.pack(">I",  0x00000000) 
+        #logger.debug("sending read req... ")
+        #self.m3_ice.ice.mbus_send(mbus_addr, read_req + dma_addr)
+        #time.sleep(0.1)
         
-
-        # bulk write of program
-        mem_addr = struct.pack(">I", 0)
-        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
-        payload = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
-        data = mem_addr + payload 
-        #logger.debug( 'data: ' + data )
-        logger.debug("Sending Program... ")
-        self.m3_ice.ice.mbus_send(mbus_addr, data)
-
+        # see above, just using RUN_CPU MBUS register again
+        clear_data= struct.pack(">I", 0x10000001)  # 1 clears reset
+        logger.debug("clearing RESET signal... ")
+        self.m3_ice.ice.mbus_send(mbus_regwr, clear_data)
+ 
 
         logger.info("")
         logger.info("Programming complete.")
         logger.info("")
 
-        #if self.m3_ice.run_after:
-        #    logger.info("Program is running on the chip")
-        #else:
-        #    self.m3_ice.do_default("Would you like to read back the program to validate?", self.validate_bin)
-        #    self.m3_ice.do_default("Would you like to send the DMA start interrupt?", self.DMA_start_interrupt)
+        return 
+    
+
+    def split_transmission( self, payload, chunk_size = 255):
+        return [ payload[i:i+chunk_size] for i in \
+                        range(0, len(payload), chunk_size) ]
 
 
-#    def DMA_start_interrupt(self):
-#        logger.info("Sending 0x88 0x00000000")
-#        self.m3_ice.ice.mbus_send("88".decode('hex'), "00000000".decode('hex'))
-#
-#    def validate_bin(self): #, hexencoded, offset=0):
-#        raise NotImplementedError("Need to update for MBus. Let me know if needed.")
-#        logger.info("Configuring ICE to ACK adress 1001 100x")
-#        ice.i2c_set_address("1001100x") # 0x98
-#
-#        logger.info("Running Validation sequence:")
-#        logger.info("\t DMA read at address 0x%x, length %d" % (offset, len(hexencoded)/2))
-#        logger.info("\t<Receive I2C message for DMA data>")
-#        logger.info("\tCompare received data and validate it was programmed correctly")
-#
-#        length = len(hexencoded)/8
-#        offset = offset
-#        data = 0x80000000 | (length << 16) | offset
-#        dma_read_req = "%08X" % (socket.htonl(data))
-#        logger.debug("Sending: " + dma_read_req)
-#        ice.i2c_send(0xaa, dma_read_req.decode('hex'))
-#
-#        logger.info("Chip Program Dump Response:")
-#        chip_bin = validate_q.get(True, ice.ONEYEAR)
-#        logger.debug("Raw chip bin response len " + str(len(chip_bin)))
-#        chip_bin = chip_bin.encode('hex')
-#        logger.debug("Chip bin len %d val: %s" % (len(chip_bin), chip_bin))
-#
-#        #1,2-addr ...
-#        chip_bin = chip_bin[2:]
-#
-#        # Consistent capitalization
-#        chip_bin = chip_bin.upper()
-#        hexencoded = hexencoded.upper()
-#
-#        for b in range(len(hexencoded)):
-#            try:
-#                if hexencoded[b] != chip_bin[b]:
-#                    logger.warn("ERR: Mismatch at half-byte" + str(b))
-#                    logger.warn("Expected:" + hexencoded[b])
-#                    logger.warn("Got:" + chip_bin[b])
-#                    return False
-#            except IndexError:
-#                logger.warn("ERR: Length mismatch")
-#                logger.warn("Expected %d bytes" % (len(hexencoded)/2))
-#                logger.warn("Got %d bytes" % (len(chip_bin)/2))
-#                logger.warn("All prior bytes validated correctly")
-#                return False
-#
-#        logger.info("Programming validated successfully")
-#        return True
-#
 
 
 
