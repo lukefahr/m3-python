@@ -13,7 +13,7 @@ from .m3_common import m3_common
 from .m3_common import mbus_snooper
 from .m3_common import ein_programmer
 from .m3_common import goc_programmer
-from .m3_common import mbus_controller 
+from .m3_mbus import mbus_controller 
 
 from . import m3_logging
 logger = m3_logging.getGlobalLogger()
