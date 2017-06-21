@@ -854,7 +854,7 @@ class ein_programmer(object):
         logger.info("Programming validated successfully")
         return True
 
-class mbus_programmer( object):
+class mbus_controller( object):
 
     TITLE = "MBUS Programmer"
     DESCRIPTION = "Tool to program M3 chips using the MBUS protocol."
@@ -869,16 +869,26 @@ class mbus_programmer( object):
 
     def add_parse_args(self, parser):
 
-        parser.add_argument('-p', '--short-prefix',
-                help="Which short MBUS address of the PRC to be programmed? e.g. 0x1",
-                default=mbus_programmer.DEFAULT_PRC_PREFIX,
+
+        self.subparsers = parser.add_subparsers(
+                title = 'MBUS Commands',
+                description='MBUS Actions supported through ICE',
                 )
 
-        parser.add_argument('BINFILE', help="Program to flash over MBUS",
+        self.parser_program = self.subparsers.add_parser('program',
+                help = 'Program the PRC via MBUS')
+        self.parser_program.add_argument('-p', '--short-prefix',
+                help="The short MBUS address of the PRC, e.g. 0x1",
+                default=mbus_controller.DEFAULT_PRC_PREFIX,
                 )
+        self.parser_program.add_argument('BINFILE', 
+                help="Program to flash over MBUS",
+                )
+        self.parser_program.set_defaults(func=self.cmd_program)
 
-    def cmd(self):
-        self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
+    def cmd_program(self):
+        self.m3_ice.dont_do_default("Run power-on sequence", 
+                    self.m3_ice.power_on)
         self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
 
         logger.info("** Setting ICE MBus controller to slave mode")
