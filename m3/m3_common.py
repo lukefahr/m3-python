@@ -898,18 +898,17 @@ class mbus_programmer( object):
         if (prc_addr > 0x0 and prc_addr < 0xf):
             mbus_short_addr = (prc_addr << 4 | 0x02)
             mbus_addr = struct.pack(">I", mbus_short_addr)
-        elif (prc_addr > 0xf and prc_addr < 0xf0000): raise Exception("Bad MBUS Addr")
         elif (prc_addr >= 0xf0000 and prc_addr < 0xfffff):
             raise Exception("Only short prefixes supported")
             #mbus_addr = struct.pack(">I", mbus_long_addr)
-        if (prc_addr > 0xfffff): raise Exception("Bad MBUS Addr")
+        else: raise Exception("Bad MBUS Addr")
 
         logger.info('MBus_PRC_Addr: ' + binascii.hexlify(mbus_addr))
 
         # 0x0 = mbus register write
-        mbus_regwr = struct.pack(">I", ( mbus_addr << 4) | 0x0 ) 
+        mbus_regwr = struct.pack(">I", ( prc_addr << 4) | 0x0 ) 
         # 0x2 = memory write
-        mbus_memwr = struct.pack(">I", ( mbus_addr << 4) | 0x2 ) 
+        mbus_memwr = struct.pack(">I", ( prc_addr << 4) | 0x2 ) 
 
         # number of bytes per packet (must be < 256)
         chunk_size_bytes = 128 
@@ -921,23 +920,28 @@ class mbus_programmer( object):
             #RUN_CPU = 0xA0000040  # Taken from PRCv14_PREv14.pdf page 19. 
             #mem_addr = struct.pack(">I", RUN_CPU) 
         # instead use the RUN_CPU MBUS register
-        mbus_addr = struct.pack(">I", ( mbus_addr << 4) | 0x0 ) 
         data= struct.pack(">I", 0x10000000) 
         logger.debug("raising RESET signal... ")
-        logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
         self.m3_ice.ice.mbus_send(mbus_regwr, data)
 
         # load the program
         logger.debug ( 'loading binfile: '  + self.m3_ice.args.BINFILE) 
         datafile = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
-
+        # convert to hex
+        datafile = binascii.unhexlify(datafile)
+        # then switch endian-ness
+        # https://docs.python.org/2/library/struct.html
+        bigE= '>' +  str(int(len(datafile)/4)) + 'I' # words = bytes/4
+        litE= '<' + str(int(len(datafile)/4)) + 'I' 
+        # unpack little endian, repack big endian
+        datafile = struct.pack(bigE, * struct.unpack(litE, datafile))
+ 
         # split file into chunks, pair each chunk with an address, 
         # then write each addr,chunk over mbus
         logger.debug ( 'splitting binfile into ' + str(chunk_size_bytes) 
                             + ' byte chunks')
-        payload_chunks = self.split_transmission(datafile, chunk_size_chars)
-        #/2 converts to byes
-        payload_addrs = range(0, len(datafile)/2, chunk_size_bytes) 
+        payload_chunks = self.split_transmission(datafile, chunk_size_bytes)
+        payload_addrs = range(0, len(datafile), chunk_size_bytes) 
 
         for mem_addr, payload in zip(payload_addrs, payload_chunks):
             print ('mem_addr:' + str(mem_addr))
@@ -945,15 +949,6 @@ class mbus_programmer( object):
             mem_addr = struct.pack(">I", mem_addr)
             logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
 
-            # convert to hex
-            payload = binascii.unhexlify(payload)
-
-            # then switch endian-ness
-            # https://docs.python.org/2/library/struct.html
-            bigE= '>' +  str(int(len(payload)/4)) + 'I' # words = bytes/4
-            litE= '<' + str(int(len(payload)/4)) + 'I' 
-            # unpack little endian, repack big endian
-            payload = struct.pack(bigE, * struct.unpack(litE, payload))
             logger.debug('Payload: ' + binascii.hexlify(payload))
 
             data = mem_addr + payload 
