@@ -360,7 +360,9 @@ class m3_common(object):
         # Fix an ICE issue where the power rails must be poked for
         # the GOC circuitry to wake up
         self.ice.goc_set_onoff(False)
-        self.ice.power_set_onoff(self.ice.POWER_GOC, True)
+
+        if 'p' in self.ice.capabilities:
+            self.ice.power_set_onoff(self.ice.POWER_GOC, True)
 
     # Andrew:  no longer used
     #def callback_helper(self, msg_type, event_id, length, msg):
@@ -647,7 +649,9 @@ class goc_programmer(object):
         self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
         self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
         logger.info("** Setting ICE MBus controller to slave mode")
-        self.m3_ice.ice.mbus_set_master_onoff(False)
+
+        if 'm' in self.m3_ice.ice.capabilities:
+            self.m3_ice.ice.mbus_set_master_onoff(False)
 
         self.set_slow_frequency()
         self.wake_chip()
