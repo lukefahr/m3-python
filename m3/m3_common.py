@@ -648,12 +648,16 @@ class goc_programmer(object):
         self.m3_ice.ice.goc_set_onoff(False)
 
     def _generic_startup(self):
-        self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
-        self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
-        logger.info("** Setting ICE MBus controller to slave mode")
+
+        try: 
+            self.m3_ice.dont_do_default("Run power-on sequence", self.m3_ice.power_on)
+            self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
+        except self.m3_ice.ice.CapabilityError:
+            logger.warn("Power commands not supported")
         
         try:
             self.m3_ice.ice.mbus_set_master_onoff(False)
+            logger.info("** Setting ICE MBus controller to slave mode")
         except self.m3_ice.ice.CapabilityError:
             pass
 
