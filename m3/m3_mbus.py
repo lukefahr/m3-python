@@ -147,7 +147,6 @@ class mbus_controller( object):
         payload_addrs = range(0, len(datafile), chunk_size_bytes) 
 
         for mem_addr, payload in zip(payload_addrs, payload_chunks):
-            print ('mem_addr:' + str(mem_addr))
 
             mem_addr = struct.pack(">I", mem_addr)
             logger.debug('Mem Addr: ' + binascii.hexlify(mem_addr))
