@@ -82,6 +82,9 @@ class mbus_controller( object):
 
         self.parser_debug = self.subparsers.add_parser('debug',
                 help = 'Debug the PRC via MBUS')
+        self.parser_debug.add_argument('DbgAddr',
+                help='The memory address to insert a dbgpoint'
+                )
         self.parser_debug.add_argument('-p', '--short-prefix',
                 help="The short MBUS address of the PRC, e.g. 0x1",
                 default=mbus_controller.DEFAULT_PRC_PREFIX,
@@ -244,12 +247,14 @@ class mbus_controller( object):
             #mbus_addr = struct.pack(">I", mbus_long_addr)
         else: raise Exception("Bad MBUS Addr")
        
+        # might not word aligned :(
+        break_addr = int(self.m3_ice.args.DbgAddr, 16) 
+
         prc_memrd = struct.pack(">I", ( prc_addr << 4) | 0x3 ) 
         prc_memwr = struct.pack(">I", ( prc_addr << 4) | 0x2 ) 
 
         svc_01 = 0xdf01 # asm("SVC #01")
 
-        break_addr = 0x41e # might not word aligned :(
 
 
         logger.info("** Re-configuring ICE MBus to listen for dbg packets")
@@ -261,7 +266,7 @@ class mbus_controller( object):
         break_addr_high_nibble = True if (break_addr % 4) else False
         break_addr_align = break_addr & 0xfffffffc            
         
-        logger.info("Inserting breakpoint at " + hex(break_addr))
+        logger.info("Inserting DBGpoint at " + hex(break_addr))
         logger.debug("    which is the " + 
                         ("HIGH" if break_addr_high_nibble else "LOW") +
                         " nibble of the word: " + 
@@ -293,16 +298,26 @@ class mbus_controller( object):
                         " @" + hex(break_addr_align))
         _ice.mbus_send(prc_memwr, wr_addr + wr_data)
 
-        logger.info("waiting for DBG to trigger")
-        # read the gdb_flag's memory address
+        logger.info("Waiting for DBG to trigger")
+        # read the gdb_flag pointer
         timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
         [mbus_addr] = struct.unpack(">I", mbus_addr)
         assert( mbus_addr == 0xe0)
-        [mem_data] = struct.unpack(">I", mbus_data)
-        logger.debug("DBG triggered, flag at: 0x" + hex(mem_data))
+        [flag_addr ] = struct.unpack(">I", mbus_data)
+        logger.debug("DBG triggered, flag at: 0x" + hex(flag_addr))
 
-        #save the flag 
-        flag_addr =  mem_data 
+        # read the reg_pointer 
+        timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
+        [mbus_addr] = struct.unpack(">I", mbus_addr)
+        assert( mbus_addr == 0xe0)
+        [reg_addr ] = struct.unpack(">I", mbus_data)
+        logger.debug("  regs at: 0x" + hex(reg_addr))
+
+        # reading the registers
+        assert(len(regs) == 18)
+        reg_memrd_reply = struct.pack(">I",  0xe0000011) # 0x11=17+1 = 18 regs to read
+        reg_memrd_addr = struct.pack(">I", reg_addr) 
+        _ice.mbus_send(prc_memrd, reg_memrd_reply + reg_memrd_addr )
 
         # read the regs
         timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
@@ -320,7 +335,7 @@ class mbus_controller( object):
         reg_list = [ 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
                       'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc',
                         'isr_lr', 'xPSR', ]
-        logger.info("DBG triggered, dumping registers")
+        logger.info("DBG active, dumping registers")
         for reg in reg_list:
             logger.info(" reg: " + reg + ' : ' + hex(regs[reg]) )
 
