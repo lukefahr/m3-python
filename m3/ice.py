@@ -1774,6 +1774,8 @@ class ICE(object):
         if rail not in (ICE.POWER_0P6, ICE.POWER_1P2, ICE.POWER_VBATT, ICE.POWER_GOC):
             raise self.ParameterError("Invalid rail: " + str(rail))
 
+        raise Exception("This does not currently work on the ICE board")
+
         resp = self.send_message_until_acked('P', struct.pack("BB", ord('o'), rail))
         if len(resp) != 1:
             raise self.FormatError("Too long of a response from `Po#':" + str(resp))
