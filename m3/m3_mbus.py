@@ -212,24 +212,223 @@ class mbus_controller( object):
     #
     #
     def cmd_debug (self):
-        
-        _ice = self.m3_ice.ice
-        
-        self._callback_queue = Queue.Queue()
-        _ice.msg_handler['b++'] = self._cmd_debug_callback
+      
+    
+        #
+        #
+        #
+        #
+        #
+        class MBusInterface:
 
-        regs = {    'isr_lr' : 0x0,     'sp' : 0x0,     'r8' : 0x0, 
-                    'r9' : 0x0,         'r10' : 0x0,    'r11' : 0x0, 
-                    'r4' : 0x0,         'r5' : 0x0,     'r6' : 0x0, 
-                    'r7' : 0x0,         'r0' : 0x0,     'r1' : 0x0, 
-                    'r2' : 0x0,         'r3' : 0x0,     'r12' : 0x0, 
-                    'lr' : 0x0,         'pc' : 0x0,     'xPSR' : 0x0,
-                }
+            #
+            #
+            #
+            def __init__(this, _ice, prc_addr):
+                this.ice = _ice
+
+                logger.info("** Re-configuring ICE MBus to listen for "+\
+                            "Debug Packets")
+                this.ice.mbus_set_internal_reset(True)
+                this.ice.mbus_set_snoop(False)
+                this.ice.mbus_set_short_prefix( bin(int('0xe',16))[2:] )
+                this.ice.mbus_set_internal_reset(False)
+
+                this.prc_addr = prc_addr
+                
+                #register the callback
+                this.callback_queue = Queue.Queue()
+                this.ice.msg_handler['b++'] = this._callback
+           
+            #
+            #
+            #
+            def _callback(this,*args, **kwargs):
+                this.callback_queue.put((time.time(), args, kwargs))
+           
+            #
+            #
+            #
+            def read(this,):
+                _d, [mbus_addr, mbus_data], _d = this.callback_queue.get()
+                return [mbus_addr, mbus_data]
+            #
+            #
+            #
+            def read_mem(this,addr,size):
+
+                logger.debug("Requesting " + hex(addr))
+                assert( size in [32,16,8] )
+                
+                #first, find the 32-bit word around addr
+                align32 = this._align32(addr,size)
+
+                #third, form the request message
+                logger.debug("Requesting a word @ " + hex(align32))
+                prc_memrd = struct.pack(">I", ( this.prc_addr << 4) | 0x3 ) 
+                memrd_reply = struct.pack(">I",  0xe0000000)
+                memrd_addr = struct.pack(">I", align32) 
+                memrd_resp_addr = struct.pack(">I", 0x00000000)
+                this.ice.mbus_send(prc_memrd, 
+                            memrd_reply + memrd_addr +  memrd_resp_addr )
+               
+                #fourth, wait for a response
+                #FIXME: need to figure this out
+                [mbus_addr, mbus_data]= this.read()
+                [mbus_addr] = struct.unpack(">I", mbus_addr)
+                [mem_addr, mem_data] = struct.unpack(">II", mbus_data)
+                assert( mbus_addr == 0xe0)
+                assert( mem_addr == 0x00000000)
+
+                logger.debug( hex(align32) + " = " + hex(mem_data) )
+                
+                #fifth, split data back to requested size
+                mask = 2 ** size - 1
+                if size == 32: shift = 0
+                elif size == 16: shift = 8*(addr & 0x02) 
+                elif size == 8:  shift = 8*(addr & 0x03)
+
+                mem_data = mem_data >> shift
+                mem_data = mem_data & mask
+
+                return mem_data
+
+            #
+            #
+            #
+            def write_mem(this, addr, value, size):
+                
+                logger.debug('Writing ' + str(value) + ' to ' + hex(addr))
+                
+                assert(isinstance(addr, int))
+                assert(isinstance(value, int))
+                assert(size in [32,16,8])
+
+                align32 = this._align32(addr,size)
+
+                if size == 32:
+                    write32 = value
+                elif size == 16:
+                    mask32 = ((2 ** size -1) << 8 * (addr & 0x02))
+                    mask32n = 0xffffffff - mask32
+
+                    orig32 = this.read_mem(align32,32)
+                    value32 =  value << size | value # just duplicate it
+
+                    write32 = orig32 & mask32n 
+                    write32 = write32 | (value32 & mask32)
+                elif size == 8:
+                    assert(False and "Fixme Me!")
+               
+                logger.debug("Writing " + hex(write32) + " @ " + hex(align32))
+                prc_memwr = struct.pack(">I", ( this.prc_addr << 4) | 0x2 ) 
+                memwr_addr = struct.pack(">I", align32)  
+                memwr_data = struct.pack(">I", write32)
+                this.ice.mbus_send(prc_memwr, 
+                    memwr_addr + memwr_data) 
+
+            #
+            #
+            #
+            def _align32(this,addr,size):
+
+                align32 =  addr & 0xfffffffc
+
+                if size == 32:
+                    assert( align32 == ((addr + 3) & 0xfffffffc))
+                elif size == 16:
+                    assert( align32 == ((addr + 1) & 0xfffffffc))
+                
+                return align32
 
 
-        logger.info("** Setting ICE MBus controller to slave mode")
-        self.m3_ice.ice.mbus_set_master_onoff(False)
+        #
+        #
+        #
+        #
+        #
+        class Memory:
+            
+            #
+            #
+            #
+            def __init__(this, mbus):
+                assert( isinstance(mbus, MBusInterface))
+                this.mbus = mbus
 
+            #
+            #
+            #
+            def __getitem__(this,key):
+                logger.debug("MemRd: " + str(key))
+                assert( isinstance(key, int))
+                return mbus.read_mem(key,32)
+
+            #
+            #
+            #
+            def __setitem__(this,key,val):
+                logger.debug("MemWr: " + str(key) + ':' + str(val))
+                assert( isinstance(key, int))
+                assert( isinstance(val, int))
+                mbus.write_mem(key,val,32)
+     
+        #
+        #
+        #
+        #
+        #
+        class RegFile(Memory):
+            
+            #
+            #
+            #
+            def __init__(this, mbus, base_addr, writeback=False):
+                super( RegFile, this).__init__(mbus)
+                this.base_addr = base_addr 
+
+                this.names = [  'isr_lr', 'sp', 'r8', 'r9', 'r10', 'r11', 
+                                'r4', 'r5', 'r6', 'r7', 'r0', 'r1', 'r2', 
+                                'r3', 'r12', 'lr', 'pc', 'xPSR', ]
+                this.offsets = dict( zip(this.names), 
+                                    range(0, 4* len(this.names), 4)
+                                  )
+                this.writeback = writeback
+                this.local =  {}                                
+                
+
+            #
+            #
+            #
+            def __getitem__(this,key):
+                logger.debug("RegRd: " + str(key))
+                assert( key in this.names)
+                mem_addr = this.base_addr + this.offsets[key]
+                return mbus.read_mem( mem_addr, 32)
+
+            #
+            #
+            #
+            def __setitem__(this,key,val):
+                logger.debug("RegWr: " + str(key) + ':' + str(val))
+                assert( key in this.names)
+                assert( isinstance(val, int))
+
+                if (this.writeback):
+                    mem_addr = this.base_addr + this.offsets[key]
+                    mbus.write_mem(key,val,32)
+                else: 
+                    this.local[key] = val
+            
+            #
+            #
+            #
+            def getLocal(key):
+                if key in local:
+                    return local[key]
+                else: return None
+   
+               
 
         #logger.info("Triggering MBUS internal reset")
         #self.m3_ice.ice.mbus_set_internal_reset(True)
@@ -239,6 +438,7 @@ class mbus_controller( object):
         # and convert to binary
         prc_addr = int(self.m3_ice.args.short_prefix, 16)
 
+
         if (prc_addr > 0x0 and prc_addr < 0xf):
             mbus_short_addr = (prc_addr << 4 | 0x02)
             mbus_addr = struct.pack(">I", mbus_short_addr)
@@ -246,112 +446,59 @@ class mbus_controller( object):
             raise Exception("Only short prefixes supported")
             #mbus_addr = struct.pack(">I", mbus_long_addr)
         else: raise Exception("Bad MBUS Addr")
-       
+     
+        bp()
+
+        # create MBus Interface
+        mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
+
         # might not word aligned :(
         break_addr = int(self.m3_ice.args.DbgAddr, 16) 
-
-        prc_memrd = struct.pack(">I", ( prc_addr << 4) | 0x3 ) 
-        prc_memwr = struct.pack(">I", ( prc_addr << 4) | 0x2 ) 
-
         svc_01 = 0xdf01 # asm("SVC #01")
 
+        while True: 
+            logger.debug("Requesting original instruction @" + hex(break_addr))
+            orig_inst = mbus.read_mem( break_addr, 16)
 
+            logger.info("Inserting DBGpoint at " + hex(break_addr))
+            mbus.write_mem( break_addr, svc_01, 16)
 
-        logger.info("** Re-configuring ICE MBus to listen for dbg packets")
-        _ice.mbus_set_internal_reset(True)
-        _ice.mbus_set_snoop(False)
-        _ice.mbus_set_short_prefix( bin(int('0xe',16))[2:] )
-        _ice.mbus_set_internal_reset(False)
+            logger.info("Waiting for DBG to trigger")
+            # read the gdb_flag pointer
+            mbus_addr, mbus_data = mbus.read()
 
-        break_addr_high_nibble = True if (break_addr % 4) else False
-        break_addr_align = break_addr & 0xfffffffc            
-        
-        logger.info("Inserting DBGpoint at " + hex(break_addr))
-        logger.debug("    which is the " + 
-                        ("HIGH" if break_addr_high_nibble else "LOW") +
-                        " nibble of the word: " + 
-                        hex(break_addr_align)) 
+            [mbus_addr] = struct.unpack(">I", mbus_addr)
+            assert( mbus_addr == 0xe0)
+            [flag_addr ] = struct.unpack(">I", mbus_data)
+            logger.debug("DBG triggered, flag at: 0x" + hex(flag_addr))
 
-        logger.debug("Requesting the word: @" + hex(break_addr_align))
-        memrd_reply = struct.pack(">I",  0xe0000000)
-        memrd_addr = struct.pack(">I", break_addr_align) 
-        memrd_resp_addr = struct.pack(">I", 0x00000000)
-        _ice.mbus_send(prc_memrd, memrd_reply + memrd_addr +  memrd_resp_addr )
+            mbus_addr, mbus_data = mbus.read()
+            [mbus_addr] = struct.unpack(">I", mbus_addr)
+            assert( mbus_addr == 0xe0)
+            [reg_addr ] = struct.unpack(">I", mbus_data)
+            logger.debug("  regs at: 0x" + hex(reg_addr))
 
-        _dummy , [mbus_addr, mbus_data], _dummy = self._callback_queue.get()
-        [mbus_addr] = struct.unpack(">I", mbus_addr)
-        [mem_addr, mem_data] = struct.unpack(">II", mbus_data)
-        assert( mbus_addr == 0xe0)
-        assert( mem_addr == 0x00000000)
-        
-        logger.debug("Saving the word: " + hex(mem_data) + " @" + hex(break_addr_align))
-        orig_mem_addr = memrd_addr
-        orig_mem_data = mem_data
-
-        # now we change it
-        wr_addr = orig_mem_addr
-        if (break_addr_high_nibble): # the endian-ness is backwards on x86
-            wr_data = struct.pack(">I", (svc_01 << 16) | ( mem_data & 0xffff) )
-        else:   # XXXX-svc01
-            wr_data = struct.pack(">I", (mem_data &0xffff0000) |  (svc_01) )
-        logger.debug("Updating the word: 0x" + binascii.hexlify(wr_data) + 
-                        " @" + hex(break_addr_align))
-        _ice.mbus_send(prc_memwr, wr_addr + wr_data)
-
-        logger.info("Waiting for DBG to trigger")
-        # read the gdb_flag pointer
-        timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
-        [mbus_addr] = struct.unpack(">I", mbus_addr)
-        assert( mbus_addr == 0xe0)
-        [flag_addr ] = struct.unpack(">I", mbus_data)
-        logger.debug("DBG triggered, flag at: 0x" + hex(flag_addr))
-
-        # read the reg_pointer 
-        timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
-        [mbus_addr] = struct.unpack(">I", mbus_addr)
-        assert( mbus_addr == 0xe0)
-        [reg_addr ] = struct.unpack(">I", mbus_data)
-        logger.debug("  regs at: 0x" + hex(reg_addr))
-
-        # reading the registers
-        assert(len(regs) == 18)
-        reg_memrd_reply = struct.pack(">I",  0xe0000011) # 0x11=17+1 = 18 regs to read
-        reg_memrd_addr = struct.pack(">I", reg_addr) 
-        _ice.mbus_send(prc_memrd, reg_memrd_reply + reg_memrd_addr )
-
-        # read the regs
-        timestamp, [mbus_addr, mbus_data], kwargs = self._callback_queue.get()
-        [mbus_addr] = struct.unpack(">I", mbus_addr)
-        assert( mbus_addr == 0xe0)
-        #print ( binascii.hexlify( mbus_data) )
-        [ regs['isr_lr'], regs['sp'], regs['r8'],
-          regs['r9'], regs['r10'], regs['r11'],
-          regs['r4'], regs['r5'], regs['r6'],
-          regs['r7'], regs['r0'], regs['r1'],
-          regs['r2'], regs['r3'], regs['r12'],
-          regs['lr'], regs['pc'], regs['xPSR'], ] = \
-                                struct.unpack(">"+"I"*len(regs), mbus_data)
+            mem = Memory(mbus)
+            rf = RegFile(mbus,reg_addr)
          
-        reg_list = [ 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-                      'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc',
-                        'isr_lr', 'xPSR', ]
-        logger.info("DBG active, dumping registers")
-        for reg in reg_list:
-            logger.info(" reg: " + reg + ' : ' + hex(regs[reg]) )
+            from PyMulator.PyMulator import PyMulator
+            mulator = PyMulator(rf,mem,debug=True)
 
-        # put the original instruction back
-        logger.debug("restoring origional word " +  hex(orig_mem_data)  + 
-                    " at 0x" + binascii.hexlify( orig_mem_addr) )
-        wr_orig_addr = orig_mem_addr
-        wr_orig_data = struct.pack(">I", orig_mem_data)
-        _ice.mbus_send(prc_memwr, wr_orig_addr + wr_orig_data)
+            mulator.stepi()
 
-        # clear the gdb_flag
-        logger.debug("DBG clearing flag @" + hex(flag_addr))
-        wr_flag_addr = struct.pack(">I", flag_addr)
-        wr_flag_data = struct.pack(">I", 0x1) 
-        _ice.mbus_send(prc_memwr, wr_flag_addr + wr_flag_data)
+            npc = rf.getLocal('r15')
 
+            # put the original instruction back
+            logger.debug("restoring origional instruction" +  hex(orig_inst)  + 
+                        " at 0x" + hex( break_addr) )
+            mbus.write_mem( break_addr, orig_inst, 16)
+
+            # setup for the next breakpoint
+            break_addr = npc
+
+            # clear the gdb_flag
+            logger.debug("DBG clearing flag @" + hex(flag_addr))
+            mbus.write_mem(flag_addr, 0x01, 32)
 
         logger.info("")
         logger.info("Debugging complete.")
