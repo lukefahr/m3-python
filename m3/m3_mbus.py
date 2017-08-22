@@ -226,20 +226,23 @@ class mbus_controller( object):
             #
             def __init__(this, _ice, prc_addr):
                 this.ice = _ice
+                this.ice_addr = 0xe
+                this.prc_addr = prc_addr
 
                 logger.info("** Re-configuring ICE MBus to listen for "+\
                             "Debug Packets")
                 this.ice.mbus_set_internal_reset(True)
                 this.ice.mbus_set_snoop(False)
-                this.ice.mbus_set_short_prefix( bin(int('0xe',16))[2:] )
+                this.ice.mbus_set_short_prefix( hex(this.ice_addr))
                 this.ice.mbus_set_internal_reset(False)
 
-                this.prc_addr = prc_addr
-                
                 #register the callback
                 this.callback_queue = Queue.Queue()
                 this.ice.msg_handler['b++'] = this._callback
-           
+                #this.ice.msg_handler['B++'] = this._callback
+ 
+                
+          
             #
             #
             #
@@ -264,7 +267,7 @@ class mbus_controller( object):
                 align32 = this._align32(addr,size)
 
                 #third, form the request message
-                logger.debug("Requesting a word @ " + hex(align32))
+                logger.debug("Requesting the word @ " + hex(align32))
                 prc_memrd = struct.pack(">I", ( this.prc_addr << 4) | 0x3 ) 
                 memrd_reply = struct.pack(">I",  0xe0000000)
                 memrd_addr = struct.pack(">I", align32) 
@@ -280,7 +283,8 @@ class mbus_controller( object):
                 assert( mbus_addr == 0xe0)
                 assert( mem_addr == 0x00000000)
 
-                logger.debug( hex(align32) + " = " + hex(mem_data) )
+                logger.debug( "Received: " + hex(align32) + " = " \
+                                + hex(mem_data) )
                 
                 #fifth, split data back to requested size
                 mask = 2 ** size - 1
@@ -298,7 +302,7 @@ class mbus_controller( object):
             #
             def write_mem(this, addr, value, size):
                 
-                logger.debug('Writing ' + str(value) + ' to ' + hex(addr))
+                logger.debug('Writing ' + hex(value) + ' to ' + hex(addr))
                 
                 assert(isinstance(addr, int))
                 assert(isinstance(value, int))
@@ -347,7 +351,7 @@ class mbus_controller( object):
         #
         #
         #
-        class Memory:
+        class Memory(object):
             
             #
             #
@@ -360,18 +364,22 @@ class mbus_controller( object):
             #
             #
             def __getitem__(this,key):
-                logger.debug("MemRd: " + str(key))
-                assert( isinstance(key, int))
-                return mbus.read_mem(key,32)
+                addr = key[0]
+                size = key[1]
+                logger.debug("MemRd: (" + hex(addr) + ',' + str(size) + ')')
+                assert( isinstance(addr, int))
+                return this.mbus.read_mem(addr,size)
 
             #
             #
             #
             def __setitem__(this,key,val):
                 logger.debug("MemWr: " + str(key) + ':' + str(val))
-                assert( isinstance(key, int))
+                addr = key[0]
+                size = key[1]
+                assert( isinstance(addr, int))
                 assert( isinstance(val, int))
-                mbus.write_mem(key,val,32)
+                this.mbus.write_mem(addr,val,size)
      
         #
         #
@@ -386,12 +394,13 @@ class mbus_controller( object):
             def __init__(this, mbus, base_addr, writeback=False):
                 super( RegFile, this).__init__(mbus)
                 this.base_addr = base_addr 
-
+                
+                # specific ordering matching on-board gdb code
                 this.names = [  'isr_lr', 'sp', 'r8', 'r9', 'r10', 'r11', 
                                 'r4', 'r5', 'r6', 'r7', 'r0', 'r1', 'r2', 
-                                'r3', 'r12', 'lr', 'pc', 'xPSR', ]
-                this.offsets = dict( zip(this.names), 
-                                    range(0, 4* len(this.names), 4)
+                                'r3', 'r12', 'lr', 'pc', 'xpsr', ]
+                this.offsets = dict( zip(this.names, 
+                                    range(0, 4* len(this.names), 4))
                                   )
                 this.writeback = writeback
                 this.local =  {}                                
@@ -404,7 +413,7 @@ class mbus_controller( object):
                 logger.debug("RegRd: " + str(key))
                 assert( key in this.names)
                 mem_addr = this.base_addr + this.offsets[key]
-                return mbus.read_mem( mem_addr, 32)
+                return Memory.__getitem__(this,(mem_addr,32))
 
             #
             #
@@ -416,16 +425,16 @@ class mbus_controller( object):
 
                 if (this.writeback):
                     mem_addr = this.base_addr + this.offsets[key]
-                    mbus.write_mem(key,val,32)
+                    Memory.__setitem__(this,(key,32),val)
                 else: 
                     this.local[key] = val
             
             #
             #
             #
-            def getLocal(key):
-                if key in local:
-                    return local[key]
+            def getLocal(this, key):
+                if key in this.local:
+                    return this.local[key]
                 else: return None
    
                
@@ -447,7 +456,7 @@ class mbus_controller( object):
             #mbus_addr = struct.pack(">I", mbus_long_addr)
         else: raise Exception("Bad MBUS Addr")
      
-        bp()
+        #bp()
 
         # create MBus Interface
         mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
@@ -457,41 +466,44 @@ class mbus_controller( object):
         svc_01 = 0xdf01 # asm("SVC #01")
 
         while True: 
-            logger.debug("Requesting original instruction @" + hex(break_addr))
+            logger.debug("DBG Requesting original instruction @" + \
+                        hex(break_addr))
             orig_inst = mbus.read_mem( break_addr, 16)
 
-            logger.info("Inserting DBGpoint at " + hex(break_addr))
+            logger.info("DBG Inserting DBGpoint at " + hex(break_addr))
             mbus.write_mem( break_addr, svc_01, 16)
 
-            logger.info("Waiting for DBG to trigger")
+            logger.info("DBG Waiting for trigger")
             # read the gdb_flag pointer
             mbus_addr, mbus_data = mbus.read()
 
             [mbus_addr] = struct.unpack(">I", mbus_addr)
             assert( mbus_addr == 0xe0)
             [flag_addr ] = struct.unpack(">I", mbus_data)
-            logger.debug("DBG triggered, flag at: 0x" + hex(flag_addr))
+            logger.info("DBGpoint triggered")
+            logger.debug("DBG flag at: 0x" + hex(flag_addr))
 
             mbus_addr, mbus_data = mbus.read()
             [mbus_addr] = struct.unpack(">I", mbus_addr)
             assert( mbus_addr == 0xe0)
             [reg_addr ] = struct.unpack(">I", mbus_data)
-            logger.debug("  regs at: 0x" + hex(reg_addr))
+            logger.debug("DBG regs at: 0x" + hex(reg_addr))
 
+            # put the original instruction back
+            logger.debug("DBG restoring origional instruction " +  \
+                        hex(orig_inst)  + " at 0x" + hex( break_addr) )
+            mbus.write_mem( break_addr, orig_inst, 16)
+
+            logger.debug("DBG Soft-Stepping with Mulator")
             mem = Memory(mbus)
             rf = RegFile(mbus,reg_addr)
-         
             from PyMulator.PyMulator import PyMulator
             mulator = PyMulator(rf,mem,debug=True)
 
             mulator.stepi()
 
-            npc = rf.getLocal('r15')
-
-            # put the original instruction back
-            logger.debug("restoring origional instruction" +  hex(orig_inst)  + 
-                        " at 0x" + hex( break_addr) )
-            mbus.write_mem( break_addr, orig_inst, 16)
+            bp()
+            npc = rf.getLocal('pc')
 
             # setup for the next breakpoint
             break_addr = npc
