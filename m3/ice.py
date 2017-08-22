@@ -1274,6 +1274,7 @@ class ICE(object):
                     prefix = "{0:b}".format( int(prefix,16) )
                 except: 
                     raise self.FormatError("Malformed Prefix")
+                logger.debug("Prefix parsed as: " + str(prefix))
 
             if len(prefix) != 4:
                 raise self.FormatError("Prefix must be exactly 4 bits")
