@@ -229,7 +229,7 @@ class mbus_controller( object):
                 this.ice_addr = 0xe
                 this.prc_addr = prc_addr
 
-                logger.info("** Re-configuring ICE MBus to listen for "+\
+                logger.info("MBUS Re-configuring ICE MBus to listen for "+\
                             "Debug Packets")
                 this.ice.mbus_set_internal_reset(True)
                 this.ice.mbus_set_snoop(False)
@@ -254,7 +254,6 @@ class mbus_controller( object):
             #
             def read(this,):
                 data = this.callback_queue.get()
-                print("HELP:" + repr(data))
                 _d1, [mbus_addr, mbus_data], _d2 = data
                 return [mbus_addr, mbus_data]
             #
@@ -262,14 +261,14 @@ class mbus_controller( object):
             #
             def read_mem(this,addr,size):
 
-                logger.debug("Requesting " + hex(addr))
+                logger.debug("MBUS Requesting " + hex(addr))
                 assert( size in [32,16,8] )
                 
                 #first, find the 32-bit word around addr
                 align32 = this._align32(addr,size)
 
                 #third, form the request message
-                logger.debug("Requesting the word @ " + hex(align32))
+                logger.debug("MBUS Requesting the full word @ " + hex(align32))
                 prc_memrd = struct.pack(">I", ( this.prc_addr << 4) | 0x3 ) 
                 memrd_reply = struct.pack(">I",  0xe0000000)
                 memrd_addr = struct.pack(">I", align32) 
@@ -278,16 +277,13 @@ class mbus_controller( object):
                             memrd_reply + memrd_addr +  memrd_resp_addr )
                
                 #fourth, wait for a response
-                #FIXME: need to figure this out
                 [mbus_addr, mbus_data]= this.read()
-                logger.debug('HELP: mbus_addr: ' + repr(mbus_addr))
-                logger.debug('HELP: mbus_data: ' + repr(mbus_data))
                 [mbus_addr] = struct.unpack(">I", mbus_addr)
                 [mem_addr, mem_data] = struct.unpack(">II", mbus_data)
                 assert( mbus_addr == 0xe0)
                 assert( mem_addr == 0x00000000)
 
-                logger.debug( "Received: " + hex(align32) + " = " \
+                logger.debug( "MBUS Received: " + hex(align32) + " = " \
                                 + hex(mem_data) )
                 
                 #fifth, split data back to requested size
@@ -306,7 +302,7 @@ class mbus_controller( object):
             #
             def write_mem(this, addr, value, size):
                 
-                logger.debug('Writing ' + hex(value) + ' to ' + hex(addr))
+                logger.debug('MBUS Writing ' + hex(value) + ' to ' + hex(addr))
                 
                 assert(isinstance(addr, int))
                 assert(isinstance(value, int))
@@ -328,7 +324,8 @@ class mbus_controller( object):
                 elif size == 8:
                     assert(False and "Fixme Me!")
                
-                logger.debug("Writing " + hex(write32) + " @ " + hex(align32))
+                logger.debug("MBUS Writing " + hex(write32) + " @ " + \
+                        hex(align32))
                 prc_memwr = struct.pack(">I", ( this.prc_addr << 4) | 0x2 ) 
                 memwr_addr = struct.pack(">I", align32)  
                 memwr_data = struct.pack(">I", write32)
@@ -372,11 +369,6 @@ class mbus_controller( object):
                 size = key[1]
                 logger.debug("MemRd: (" + hex(addr) + ',' + str(size) + ')')
                 assert( isinstance(addr, int))
-                return this._read(addr,size)
-            #
-            #
-            #
-            def _read(this, addr, size):
                 return this.mbus.read_mem(addr,size)
 
             #
@@ -421,7 +413,7 @@ class mbus_controller( object):
             def __getitem__(this,key):
                 assert( key in this.names)
                 mem_addr = this.base_addr + this.offsets[key]
-                val = Memory._read(this,mem_addr,32)
+                val = this.mbus.read_mem(mem_addr,32)
                 # ARM pc reads return pc + 4 (it's wierd)
                 if key == 'pc': 
                     val += 4
@@ -441,7 +433,7 @@ class mbus_controller( object):
 
                 if (this.writeback):
                     mem_addr = this.base_addr + this.offsets[key]
-                    Memory.__setitem__(this,(key,32),val)
+                    this.mbus.write_mem(mem_addr,val,32)
                 else: 
                     this.local[key] = val
             
