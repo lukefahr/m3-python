@@ -253,7 +253,9 @@ class mbus_controller( object):
             #
             #
             def read(this,):
-                _d, [mbus_addr, mbus_data], _d = this.callback_queue.get()
+                data = this.callback_queue.get()
+                print("HELP:" + repr(data))
+                _d1, [mbus_addr, mbus_data], _d2 = data
                 return [mbus_addr, mbus_data]
             #
             #
@@ -278,6 +280,8 @@ class mbus_controller( object):
                 #fourth, wait for a response
                 #FIXME: need to figure this out
                 [mbus_addr, mbus_data]= this.read()
+                logger.debug('HELP: mbus_addr: ' + repr(mbus_addr))
+                logger.debug('HELP: mbus_data: ' + repr(mbus_data))
                 [mbus_addr] = struct.unpack(">I", mbus_addr)
                 [mem_addr, mem_data] = struct.unpack(">II", mbus_data)
                 assert( mbus_addr == 0xe0)
@@ -368,6 +372,11 @@ class mbus_controller( object):
                 size = key[1]
                 logger.debug("MemRd: (" + hex(addr) + ',' + str(size) + ')')
                 assert( isinstance(addr, int))
+                return this._read(addr,size)
+            #
+            #
+            #
+            def _read(this, addr, size):
                 return this.mbus.read_mem(addr,size)
 
             #
@@ -410,16 +419,23 @@ class mbus_controller( object):
             #
             #
             def __getitem__(this,key):
-                logger.debug("RegRd: " + str(key))
                 assert( key in this.names)
                 mem_addr = this.base_addr + this.offsets[key]
-                return Memory.__getitem__(this,(mem_addr,32))
+                val = Memory._read(this,mem_addr,32)
+                # ARM pc reads return pc + 4 (it's wierd)
+                if key == 'pc': 
+                    val += 4
+                    logger.debug("RegRd: pc(+4) " + hex(val))
+                else: 
+                    logger.debug("RegRd: " + str(key) + " " + hex(val))
+                return val
+                 
 
             #
             #
             #
             def __setitem__(this,key,val):
-                logger.debug("RegWr: " + str(key) + ':' + str(val))
+                logger.debug("RegWr: " + str(key) + ':' + hex(val))
                 assert( key in this.names)
                 assert( isinstance(val, int))
 
@@ -434,7 +450,10 @@ class mbus_controller( object):
             #
             def getLocal(this, key):
                 if key in this.local:
-                    return this.local[key]
+                    if key == 'pc': #ARM pc reg is wierd
+                        return this.local[key] + 4
+                    else:
+                        return this.local[key]
                 else: return None
    
                
@@ -460,18 +479,21 @@ class mbus_controller( object):
 
         # create MBus Interface
         mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
+        mem = Memory(mbus)
 
-        # might not word aligned :(
         break_addr = int(self.m3_ice.args.DbgAddr, 16) 
         svc_01 = 0xdf01 # asm("SVC #01")
 
-        while True: 
-            logger.debug("DBG Requesting original instruction @" + \
-                        hex(break_addr))
-            orig_inst = mbus.read_mem( break_addr, 16)
+        logger.debug("DBG Requesting original instruction @" + \
+                    hex(break_addr))
+        
+        orig_inst = mbus.read_mem( break_addr, 16)
 
-            logger.info("DBG Inserting DBGpoint at " + hex(break_addr))
-            mbus.write_mem( break_addr, svc_01, 16)
+        logger.info("DBG Inserting DBGpoint at " + hex(break_addr))
+        mbus.write_mem( break_addr, svc_01, 16)
+
+
+        while True:
 
             logger.info("DBG Waiting for trigger")
             # read the gdb_flag pointer
@@ -489,24 +511,36 @@ class mbus_controller( object):
             [reg_addr ] = struct.unpack(">I", mbus_data)
             logger.debug("DBG regs at: 0x" + hex(reg_addr))
 
+            logger.debug("DBG requesting registers" )
+            rf = RegFile(mbus,reg_addr,writeback=False)
+            # dump the registers
+            for reg in [ 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8',\
+                            'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc',\
+                            'xpsr', 'isr_lr' ]:
+                print( reg + ' = ' + hex(rf[reg]) )
+
             # put the original instruction back
             logger.debug("DBG restoring origional instruction " +  \
                         hex(orig_inst)  + " at 0x" + hex( break_addr) )
             mbus.write_mem( break_addr, orig_inst, 16)
 
             logger.debug("DBG Soft-Stepping with Mulator")
-            mem = Memory(mbus)
-            rf = RegFile(mbus,reg_addr)
             from PyMulator.PyMulator import PyMulator
             mulator = PyMulator(rf,mem,debug=True)
 
             mulator.stepi()
 
-            bp()
-            npc = rf.getLocal('pc')
-
             # setup for the next breakpoint
-            break_addr = npc
+            bp()
+            break_addr = rf.getLocal('pc') - 4
+
+            logger.debug("DBG Requesting next instruction @" + \
+                    hex(break_addr))
+        
+            orig_inst = mbus.read_mem( break_addr, 16)
+
+            logger.info("DBG Inserting DBGpoint at " + hex(break_addr))
+            mbus.write_mem( break_addr, svc_01, 16)
 
             # clear the gdb_flag
             logger.debug("DBG clearing flag @" + hex(flag_addr))
