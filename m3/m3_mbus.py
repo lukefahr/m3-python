@@ -238,6 +238,7 @@ class mbus_controller( object):
                 this.callback_queue = Queue.Queue()
                 this.ice.msg_handler['b++'] = this._callback
                 #this.ice.msg_handler['B++'] = this._callback
+
  
                 
           
@@ -424,6 +425,11 @@ class mbus_controller( object):
                 this.writeback = writeback
                 this.local =  {}                                
                 
+            #
+            #
+            #
+            def update_base_addr(this, base_addr):
+                this.base_addr = base_addr
 
             #
             #
@@ -484,12 +490,19 @@ class mbus_controller( object):
             raise Exception("Only short prefixes supported")
             #mbus_addr = struct.pack(">I", mbus_long_addr)
         else: raise Exception("Bad MBUS Addr")
-     
-        #bp()
+    
+        #determin current logging level
+        debug = (m3_logging.logger.getEffectiveLevel() == 
+                        m3_logging.logging.DEBUG)
 
         # create MBus Interface
         mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
+        # and the mem/reg
         mem = Memory(mbus)
+        rf = RegFile(mbus,None,writeback=False)
+        #and finally the mulator
+        from PyMulator.PyMulator import PyMulator
+        mulator = PyMulator(rf,mem,debug=debug)
 
         break_addr = int(self.m3_ice.args.DbgAddr, 16) 
         svc_01 = 0xdf01 # asm("SVC #01")
@@ -519,10 +532,10 @@ class mbus_controller( object):
             [mbus_addr] = struct.unpack(">I", mbus_addr)
             assert( mbus_addr == 0xe0)
             [reg_addr ] = struct.unpack(">I", mbus_data)
-            logger.debug("DBG regs at: " + hex(reg_addr))
+            logger.debug("DBG updating regFile at: " + hex(reg_addr))
+            rf.update_base_addr(reg_addr)
 
             logger.debug("DBG requesting registers" )
-            rf = RegFile(mbus,reg_addr,writeback=False)
             # dump the registers
             for reg in [ 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8',\
                             'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc',\
@@ -535,22 +548,15 @@ class mbus_controller( object):
             mbus.write_mem( break_addr, orig_inst, 16)
 
             logger.debug("DBG Soft-Stepping with Mulator")
-            from PyMulator.PyMulator import PyMulator
-            mulator = PyMulator(rf,mem,debug=True)
 
-            #if rf['pc'] - 4 == 0xcc:
-            #    print ("\n\n\n\nWARNING: skipping stepi\n\n\n\n")
-            #    rf['pc'] = 0xce
-            #else: 
-            #    mulator.stepi()
             mulator.stepi()
 
             # setup for the next breakpoint
             break_addr = rf.getLocal('pc') - 4
 
-            logger.debug("DBG Requesting next instruction @" + \
+            logger.info("DBG Requesting next instruction @" + \
                     hex(break_addr))
-            time.sleep(2)
+            time.sleep(1)
         
             orig_inst = mbus.read_mem( break_addr, 16)
 
