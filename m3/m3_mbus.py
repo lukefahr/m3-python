@@ -312,18 +312,31 @@ class mbus_controller( object):
 
                 if size == 32:
                     write32 = value
+
                 elif size == 16:
-                    mask32 = ((2 ** size -1) << 8 * (addr & 0x02))
-                    mask32n = 0xffffffff - mask32
+                    byte_idx = addr & 0x02
+                    mask32 = ((2 ** size -1) << (8 * byte_idx))
+                    mask32n = 0xffffffff - mask32 # bitwise not hack
 
                     orig32 = this.read_mem(align32,32)
                     value32 =  value << size | value # just duplicate it
+                    value32 = value32 & mask32 # and mask it
 
                     write32 = orig32 & mask32n 
-                    write32 = write32 | (value32 & mask32)
+                    write32 = write32 | value32
+
                 elif size == 8:
-                    assert(False and "Fixme Me!")
-               
+                    byte_idx = addr & 0x3
+                    mask32 = ((2 ** size -1) << (8 * byte_idx))
+                    mask32n = 0xffffffff - mask32 # bitwise not hack
+                    
+                    orig32 = this.read_mem(align32,32)
+                    value32 = (value << (8 * byte_idx)) 
+                    value32 = value32 & mask32
+
+                    write32 = orig32 & mask32n
+                    write32 = write32 | value32
+
                 logger.debug("MBUS Writing " + hex(write32) + " @ " + \
                         hex(align32))
                 prc_memwr = struct.pack(">I", ( this.prc_addr << 4) | 0x2 ) 
@@ -357,9 +370,11 @@ class mbus_controller( object):
             #
             #
             #
-            def __init__(this, mbus):
+            def __init__(this, mbus, writeback=False):
                 assert( isinstance(mbus, MBusInterface))
                 this.mbus = mbus
+                this.writeback = writeback
+                this.local = {}
 
             #
             #
@@ -380,7 +395,10 @@ class mbus_controller( object):
                 size = key[1]
                 assert( isinstance(addr, int))
                 assert( isinstance(val, int))
-                this.mbus.write_mem(addr,val,size)
+                if this.writeback:
+                    this.mbus.write_mem(addr,val,size)
+                else:
+                    this.local[key] = val # not the best, but ehh
      
         #
         #
@@ -494,14 +512,14 @@ class mbus_controller( object):
             [mbus_addr] = struct.unpack(">I", mbus_addr)
             assert( mbus_addr == 0xe0)
             [flag_addr ] = struct.unpack(">I", mbus_data)
-            logger.info("DBGpoint triggered")
-            logger.debug("DBG flag at: 0x" + hex(flag_addr))
+            logger.info("DBGpoint triggered @" + hex(break_addr))
+            logger.debug("DBG flag at: " + hex(flag_addr))
 
             mbus_addr, mbus_data = mbus.read()
             [mbus_addr] = struct.unpack(">I", mbus_addr)
             assert( mbus_addr == 0xe0)
             [reg_addr ] = struct.unpack(">I", mbus_data)
-            logger.debug("DBG regs at: 0x" + hex(reg_addr))
+            logger.debug("DBG regs at: " + hex(reg_addr))
 
             logger.debug("DBG requesting registers" )
             rf = RegFile(mbus,reg_addr,writeback=False)
