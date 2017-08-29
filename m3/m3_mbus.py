@@ -33,8 +33,6 @@ import queue as Queue
 import time
 import threading
 
-from pdb import set_trace as bp
-
 import struct
 
 # if Py2K:
@@ -253,8 +251,9 @@ class mbus_controller( object):
             #
             #
             def read(this,):
-                data = this.callback_queue.get()
-                _d1, [mbus_addr, mbus_data], _d2 = data
+                ONEYEAR = 365 * 24 * 60 * 60
+                _, [mbus_addr, mbus_data], _ = \
+                        this.callback_queue.get(True,ONEYEAR)
                 return [mbus_addr, mbus_data]
             #
             #
@@ -275,7 +274,8 @@ class mbus_controller( object):
                 memrd_resp_addr = struct.pack(">I", 0x00000000)
                 this.ice.mbus_send(prc_memrd, 
                             memrd_reply + memrd_addr +  memrd_resp_addr )
-               
+                logger.debug("MBUS Request sent")
+
                 #fourth, wait for a response
                 [mbus_addr, mbus_data]= this.read()
                 [mbus_addr] = struct.unpack(">I", mbus_addr)
@@ -506,7 +506,7 @@ class mbus_controller( object):
             logger.debug("DBG requesting registers" )
             rf = RegFile(mbus,reg_addr,writeback=False)
             # dump the registers
-            for reg in [ 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8',\
+            for reg in [ 'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8',\
                             'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc',\
                             'xpsr', 'isr_lr' ]:
                 print( reg + ' = ' + hex(rf[reg]) )
@@ -520,14 +520,19 @@ class mbus_controller( object):
             from PyMulator.PyMulator import PyMulator
             mulator = PyMulator(rf,mem,debug=True)
 
+            #if rf['pc'] - 4 == 0xcc:
+            #    print ("\n\n\n\nWARNING: skipping stepi\n\n\n\n")
+            #    rf['pc'] = 0xce
+            #else: 
+            #    mulator.stepi()
             mulator.stepi()
 
             # setup for the next breakpoint
-            bp()
             break_addr = rf.getLocal('pc') - 4
 
             logger.debug("DBG Requesting next instruction @" + \
                     hex(break_addr))
+            time.sleep(2)
         
             orig_inst = mbus.read_mem( break_addr, 16)
 
