@@ -26,6 +26,7 @@ import atexit
 import binascii
 import csv
 import inspect
+import logging
 import os
 import sys
 import socket
@@ -40,10 +41,20 @@ import imp
 
 from . import __version__ 
 
+
 from . import m3_logging
 logger = m3_logging.getGlobalLogger()
 
-class MBusInterface:
+ 
+
+#logging.basicConfig( level=logging.WARN, 
+#                        format='%(levelname)s %(name)s: %(message)s')
+
+class MBusInterface(object):
+    
+    class MBusInterfaceException(Exception):
+        pass
+
     '''
     A class to wrap MBus into pretty read/write commands
     '''
@@ -52,7 +63,12 @@ class MBusInterface:
     def __init__(this, _ice, prc_addr):
         this.ice = _ice
         this.ice_addr = 0xe
-        this.prc_addr = prc_addr
+
+        if (prc_addr > 0x0 and prc_addr < 0xf):
+            this.prc_addr = prc_addr
+        elif (prc_addr >= 0xf0000 and prc_addr < 0xfffff):
+            raise MBusInterfaceException("Only short prefixes supported")
+        else: raise MBusInterfaceException("Bad MBUS Addr")
 
         logger.info("MBUS Re-configuring ICE MBus to listen for "+\
                     "Debug Packets")
@@ -347,6 +363,15 @@ class mbus_controller( object):
                 )
         self.parser_halt.set_defaults(func=self.cmd_halt)
 
+        self.parser_gdb = self.subparsers.add_parser('gdb',
+                help = 'Debug the PRC via GDB')
+        self.parser_gdb.add_argument('-p', '--short-prefix',
+                help="The short MBUS address of the PRC, e.g. 0x1",
+                default=mbus_controller.DEFAULT_PRC_PREFIX,
+                )
+        self.parser_gdb.set_defaults(func=self.cmd_gdb)
+
+
     
 
 
@@ -629,6 +654,136 @@ class mbus_controller( object):
         return 
  
 
+    #
+    #
+    #
+
+    #
+    #
+    #
+    def cmd_gdb(self):
+        #class GdbServ(object):
+        #    def __init__(this):
+        #        this.ONEYEAR = 365 * 24 * 60 * 60
+        #        this.rxq = Queue.Queue()
+        #        from m3_gdb import GdbRemote
+        #        this.gdb = GdbRemote(this._callback, tcp_port=10001,\
+        #                    log_level = logging.DEBUG)
+
+        #    def _callback(this,msg):
+        #        this.rxq.put(msg)
+
+        #    def recv(this):
+        #        return this.rxq.get(True, this.ONEYEAR)
+        #    def send(this,msg):
+        #        this.q
+       
+        class PrcCtrl(object):
+            def __init__(this, mbus, log_level = logging.WARN):
+                
+                # setup our log
+                this.log = m3_logging.get_logger( type(this).__name__)
+                this.log.setLevel(log_level)
+
+                this.mbus = mbus        
+                this.mem = Memory(mbus, writeback=False)
+                this.rf = RegFile(mbus,None,writeback=False)
+
+                this.flag_addr = None
+                
+            def halt(this):
+                this.log.info("HALT")
+
+                if this.flag_addr != None:
+                    raise Exception("PRC already halted")
+
+                this.mbus.write_reg( 0x7, 0x1) # write something to MBUS_R7
+
+                this.log.debug("waiting for HALT to trigger... ")
+
+                # read the gdb_flag and register pointer
+                mbus_addr, mbus_data = mbus.read()
+                [mbus_addr] = struct.unpack(">I", mbus_addr)
+                assert( mbus_addr == 0xe0)
+                [flag_addr ] = struct.unpack(">I", mbus_data)
+                this.log.info("HALT triggered")
+                this.log.debug("DBG flag at: " + hex(flag_addr))
+                this.flag_addr = flag_addr
+
+                mbus_addr, mbus_data = mbus.read()
+                [mbus_addr] = struct.unpack(">I", mbus_addr)
+                assert( mbus_addr == 0xe0)
+                [reg_addr ] = struct.unpack(">I", mbus_data)
+                this.log.debug("DBG updating regFile at: " + hex(reg_addr))
+                this.rf.update_base_addr(reg_addr)
+            
+            def resume(this):
+                this.log.info("RESUME")
+                
+                if this.flag_addr == None:
+                    raise Exception("PRC not halted?")
+
+                # clear the gdb_flag
+                this.log.debug("DBG clearing flag @" + hex(this.flag_addr))
+                this.mbus.write_mem(this.flag_addr, 0x01, 32)
+
+                this.flag_addr = None
+
+            def reg_read(this, reg):
+                assert(this.flag_addr != None)
+                this.log.debug('reg_read: ' + str(reg))
+                return this.rf[reg]
+
+            def mem_read(this, addr, size):
+                assert(this.flag_addr != None)
+                assert(size <= 32)
+                return this.mem[(addr,size)]
+
+            def reg_write(this, reg, val):
+                assert(this.flag_addr != None)
+                this.rf[reg] = val 
+            
+            def mem_write(this, addr, size, val): 
+                assert(this.flag_addr != None)
+                assert(size <= 32)
+                this.mem[(addr,size)] = val
+           
+            def break_set(this, addr):
+                assert(False)
+
+            def break_clear(this, addr):
+                assert(False)
+
+
+        #pull prc_addr from command line
+        # and convert to binary
+        prc_addr = int(self.m3_ice.args.short_prefix, 16)
+   
+        #determin current logging level
+        debug = (m3_logging.logger.getEffectiveLevel() == 
+                        m3_logging.logging.DEBUG)
+
+        # create MBus Interface
+        mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
+
+        ctrl = PrcCtrl( mbus, log_level = logging.DEBUG)
+
+        while (True):
+            line = str(raw_input("< "))
+            cmd = line.split(' ')[0]
+            args = line.split(' ')[1:] if len(line.split(' ')) > 1 else None
+            
+            if cmd == 'QUIT': break
+            else : 
+                func = getattr(ctrl, cmd.lower())
+                if args != None: 
+                    ret = func(args)
+                else: 
+                    ret = func()
+                print (ret)
+
+        return 
+ 
     
 
 
