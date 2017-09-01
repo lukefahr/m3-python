@@ -9,6 +9,7 @@ import binascii
 import logging
 import os
 import socket
+import struct
 import sys
 
 #inspired by
@@ -24,7 +25,7 @@ class GdbRemote(object):
     class CtrlCException(Exception):
         pass
 
-    def __init__(this, tcp_port = 10001, log_level = logging.WARN):
+    def __init__(this, callback, tcp_port = 10001, log_level = logging.WARN):
         
         # setup our log
         this.log = logging.getLogger(type(this).__name__)
@@ -44,9 +45,17 @@ class GdbRemote(object):
 
         this.log.info( 'Listening on port: ' + str(tcp_port))
         this.sock.listen(1) #not sure why 1
-        
-        
-    def _run(this):
+
+        #remember the callback function
+        this.callback = callback
+       
+        # https://opensource.apple.com/source/gdb/gdb-1469/src/gdb/arm-tdep.c.auto.html        
+        this.regs = [ "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", 
+                     "r9", "r10", "r11", "r12", "sp", "lr", "pc", 
+                     "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "fps",
+                     "cpsr", ]
+
+    def run(this):
         
         while True:
             [conn, client] = this.sock.accept()
@@ -57,7 +66,7 @@ class GdbRemote(object):
             plus = conn.recv(1)
             assert(plus == '+')
 
-            this.stub('HALT')
+            this.callback('HALT')
             try:
                 while True:
                     msg  = this._gdb_recv( conn)
@@ -87,7 +96,12 @@ class GdbRemote(object):
         subCmd = cmd[1:]
         
         if cmdType == '?': return this._process_Question()
+        elif cmdType == 'D': return this._process_D()
         elif cmdType == 'H': return this._process_H(subCmd)
+        elif cmdType == 'k': return this._process_k()
+        elif cmdType == 'g': return this._process_g(subCmd)
+        elif cmdType == 'm': return this._process_m(subCmd)
+        elif cmdType == 'p': return this._process_p(subCmd)
         elif cmdType == 'q': return this._process_q(subCmd)
         else: raise Exception()
 
@@ -100,16 +114,70 @@ class GdbRemote(object):
         # Report why the target is halted
         # SIGTRAP?  Why not...
         return "S05"
-    
+    #
+    #
+    #
+    def _process_D(this, ):
+        this.log.debug('gdb detaching')
+        this.callback("RESUME")
+        return "OK"
+
     #
     #
     #
     def _process_H(this, subcmd):
         this.log.debug("unsupported H command")
         return ""
-        
+
     #
     #
+    #
+    def _process_k(this):
+        this.log.warn("Kill command")
+        this.callback("RESUME")
+        return None
+
+    #
+    # Read all regs
+    #
+    def _process_g(this, subcmd):
+        this.log.debug('Read all Regs')
+        resp = ''
+        for r in this.regs:
+            val = this.callback('REG READ ' + r)
+            val = struct.pack('<I', val).encode('hex')
+            resp += val
+
+        return resp
+  
+    #
+    # memory read
+    #
+    def _process_m(this, subcmd):
+        this.log.debug('Memory Read')
+        addr,size = subcmd.split(',')
+        assert(size == '4')
+        val = this.callback('MEM READ 0x'+addr + ' ' + size)
+        val = int(val, 16)
+        val = struct.pack('<I', val).encode('hex')
+        resp = val
+        return resp
+
+    #
+    # read specific reg
+    #
+    def _process_p(this, subcmd):
+        this.log.debug('Register Read')
+        reg =  int( subcmd, 16)
+        reg = this.regs[reg]
+        val = this.callback('REG READ '+ reg)
+        val = int(val,16)
+        val = struct.pack('<I',val).encode('hex')
+        resp = val
+        return resp
+
+    #
+    # general query commands
     #
     def _process_q(this, subcmd):
         
@@ -135,6 +203,10 @@ class GdbRemote(object):
             # startup command
             this.log.debug('qSupported')
             return "PacketSize=4096"
+        elif subcmd.startswith('Symbol'):
+            # gdb is offering us the symbol table
+            return "OK"
+
         elif subcmd.startswith('TStatus'):
             #this has to do with tracing, we're not handling that yet
             return ""
@@ -220,11 +292,12 @@ class GdbRemote(object):
         assert(rawdata[0] == '+')
 
    
-    #
-    #
-    #
-    def stub(this, msg):
-        print("="*40 + "\n" + msg + "\n" + "="*40)
+#
+#
+#
+def stub(msg):
+    print("="*40 + "\n" + msg + "\n" + "="*40)
+    return '0x300'
 
 
 if __name__ == '__main__':
@@ -239,5 +312,5 @@ if __name__ == '__main__':
                port = int(arg.split("=")[1])
                print 'set port=' + str(port)
 
-    gdb = GdbRemote( tcp_port=port, log_level = logging.DEBUG)
-    gdb._run()
+    gdb = GdbRemote( callback=stub, tcp_port=port, log_level = logging.DEBUG)
+    gdb.run()
