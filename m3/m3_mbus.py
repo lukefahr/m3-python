@@ -33,6 +33,7 @@ import socket
 import queue as Queue
 import time
 import threading
+import multiprocessing
 
 import struct
 
@@ -52,8 +53,8 @@ logger = m3_logging.getGlobalLogger()
 
 class MBusInterface(object):
     
-    class MBusInterfaceException(Exception):
-        pass
+    class UnalignedException(Exception): pass
+    class MBusInterfaceException(Exception): pass
 
     '''
     A class to wrap MBus into pretty read/write commands
@@ -95,9 +96,7 @@ class MBusInterface(object):
 
     #
     def read_mem(this,addr,size):
-
         logger.debug("MBUS Requesting " + hex(addr))
-        assert( size in [32,16,8] )
         
         #first, find the 32-bit word around addr
         align32 = this._align32(addr,size)
@@ -197,9 +196,11 @@ class MBusInterface(object):
         align32 =  addr & 0xfffffffc
 
         if size == 32:
-            assert( align32 == ((addr + 3) & 0xfffffffc))
+            if not ( align32 == ((addr + 3) & 0xfffffffc)):
+                raise UnalignedException()
         elif size == 16:
-            assert( align32 == ((addr + 1) & 0xfffffffc))
+            if not ( align32 == ((addr + 1) & 0xfffffffc)):
+                raise UnalignedException()
         
         return align32
 
@@ -223,7 +224,19 @@ class Memory(object):
         size = key[1]
         logger.debug("MemRd: (" + hex(addr) + ',' + str(size) + ')')
         assert( isinstance(addr, int))
-        return this.mbus.read_mem(addr,size)
+        try:
+            return this.mbus.read_mem(addr,size)
+        except this.mbus.UnalignedException: 
+            # looks like we do it the hard way
+            logger.debug('MemRd: unaligned access')
+            assert( size in [32,16] )
+            val = 0
+            while size > 0:
+                tval = this.mbus.read_mem(addr,8)
+                assert(tval <= 0xff)
+                val = val << 8 | tval 
+                size -= 8
+            return val
 
     #
     def __setitem__(this,key,val):
@@ -258,6 +271,10 @@ class RegFile(Memory):
         this.names = [  'isr_lr', 'sp', 'r8', 'r9', 'r10', 'r11', 
                         'r4', 'r5', 'r6', 'r7', 'r0', 'r1', 'r2', 
                         'r3', 'r12', 'lr', 'pc', 'xpsr', ]
+        # The M0 does not include floating-point registers
+        this.warn_names = [ 'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 
+                            'fps', ]
+        this.warn_trans_names = { 'cpsr':'xpsr' }                            
         this.offsets = dict( zip(this.names, 
                             range(0, 4* len(this.names), 4))
                           )
@@ -273,6 +290,15 @@ class RegFile(Memory):
 
     #
     def __getitem__(this,key):
+        # just pretend all fp regs are zero
+        if key in this.warn_names:
+            logger.warn('Reading: ' + str(key) + ' as 0')
+            return 0
+        elif key in this.warn_trans_names:
+            logger.warning('Reading ' + str(this.warn_trans_names[key]) + \
+                            ' in place of ' + str(key))
+            key = this.warn_trans_names[key] 
+
         assert( key in this.names)
         mem_addr = this.base_addr + this.offsets[key]
         val = this.mbus.read_mem(mem_addr,32)
@@ -678,7 +704,7 @@ class mbus_controller( object):
         #    def send(this,msg):
         #        this.q
        
-        class PrcCtrl(object):
+        class PrcManager(object):
             def __init__(this, mbus, log_level = logging.WARN):
                 
                 # setup our log
@@ -691,8 +717,8 @@ class mbus_controller( object):
 
                 this.flag_addr = None
                 
-            def halt(this):
-                this.log.info("HALT")
+            def cmd_ctrlc(this,):
+                this.log.info("CTRL+C (HALT)")
 
                 if this.flag_addr != None:
                     raise Exception("PRC already halted")
@@ -717,8 +743,8 @@ class mbus_controller( object):
                 this.log.debug("DBG updating regFile at: " + hex(reg_addr))
                 this.rf.update_base_addr(reg_addr)
             
-            def resume(this):
-                this.log.info("RESUME")
+            def cmd_c(this):
+                this.log.info("continue")
                 
                 if this.flag_addr == None:
                     raise Exception("PRC not halted?")
@@ -729,15 +755,16 @@ class mbus_controller( object):
 
                 this.flag_addr = None
 
-            def reg_read(this, reg):
+            def cmd_p(this, reg):
                 assert(this.flag_addr != None)
-                this.log.debug('reg_read: ' + str(reg))
-                return this.rf[reg]
+                this.log.info('reg_read: ' + str(reg))
+                return hex(this.rf[reg])
 
-            def mem_read(this, addr, size):
+            def cmd_m(this, addr, size):
+                this.log.info('mem read: ' + hex(addr) + ' of ' + str(size))
                 assert(this.flag_addr != None)
                 assert(size <= 32)
-                return this.mem[(addr,size)]
+                return hex(this.mem[(addr,size)])
 
             def reg_write(this, reg, val):
                 assert(this.flag_addr != None)
@@ -754,6 +781,56 @@ class mbus_controller( object):
             def break_clear(this, addr):
                 assert(False)
 
+        class GdbManager(object):
+            def __init__(this, port=10001, log_level = logging.WARN):
+                # setup our log
+                this.log = m3_logging.get_logger( type(this).__name__)
+                this.log.setLevel(log_level)
+                            
+                this.reqQ = Queue.Queue()
+                this.respQ = Queue.Queue()
+                
+                from . import m3_gdb
+                try:
+                    # create and start our gdb thread
+                    this.gdb = m3_gdb.GdbRemote(this._cb, tcp_port = port, 
+                                log_level = log_level)
+                except m3_gdb.GdbRemote.PortTakenException:
+                    port = port + 1
+                    this.log.warn("Using Alternative Port: " + str(port))
+                    this.gdb = m3_gdb.GdbRemote(this._cb, tcp_port = port, 
+                                log_level = log_level)
+
+                this.gdbTid = threading.Thread(
+                                    target=this.gdb.run, )
+                this.gdbTid.daemon = True
+                this.gdbTid.start()
+
+                this.log.debug("Started GDB Thread")
+
+            def _cb(this, cmd, *args, **kwargs):
+                this.reqQ.put( (cmd, args, kwargs) )
+                while True:
+                    try: return this.respQ.get(True, 10)
+                    except Queue.Empty: pass
+            
+            def get(this):
+                while True: 
+                    try: return this.reqQ.get(True, 10)
+                    except Queue.Empty: pass
+            def put(this, msg):
+                this.respQ.put(msg)
+        
+        class InputManager(object):
+            def get(this):
+                s = raw_input("<: ")
+                sp = s.split(' ', 1)
+                if len(sp) == 1:
+                    return sp[0], (), {}
+                else:
+                    return sp[0], (sp[1]), {}
+            def put(this, msg):
+                print ( str(msg) )
 
         #pull prc_addr from command line
         # and convert to binary
@@ -766,21 +843,22 @@ class mbus_controller( object):
         # create MBus Interface
         mbus = MBusInterface( self.m3_ice.ice, prc_addr) 
 
-        ctrl = PrcCtrl( mbus, log_level = logging.DEBUG)
+        ctrl = PrcManager( mbus, log_level = logging.DEBUG)
+        gdb = GdbManager( port=10001, log_level = logging.DEBUG)
+        #gdb = InputManager()
 
+        logger.debug ("GDB main loop")
         while (True):
-            line = str(raw_input("< "))
-            cmd = line.split(' ')[0]
-            args = line.split(' ')[1:] if len(line.split(' ')) > 1 else None
-            
-            if cmd == 'QUIT': break
+            cmd, args, kwargs = gdb.get()
+            cmd = 'cmd_'+cmd.lower()
+
+            if cmd == 'quit': 
+                logger.info('GDB Quiting')
+                break
             else : 
-                func = getattr(ctrl, cmd.lower())
-                if args != None: 
-                    ret = func(args)
-                else: 
-                    ret = func()
-                print (ret)
+                func = getattr(ctrl, cmd)
+                ret = func(*args, **kwargs)
+                gdb.put(ret)
 
         return 
  

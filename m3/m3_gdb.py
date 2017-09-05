@@ -15,20 +15,20 @@ import sys
 #inspired by
 # https://github.com/0vercl0k/ollydbg2-python/blob/master/samples/gdbserver/gdbserver.py#L147
 
+try: from . import m3_logging
+except ValueError: import logging as m3_logging
 
 class GdbRemote(object):
 
-    class GdbRemoteException(Exception):
-        pass
-    class DisconnectException(Exception):
-        pass
-    class CtrlCException(Exception):
-        pass
+    class GdbRemoteException(Exception): pass
+    class PortTakenException(Exception): pass
+    class DisconnectException(Exception): pass
+    class CtrlCException(Exception): pass
 
     def __init__(this, callback, tcp_port = 10001, log_level = logging.WARN):
         
         # setup our log
-        this.log = logging.getLogger(type(this).__name__)
+        this.log = m3_logging.getLogger( type(this).__name__)
         this.log.setLevel(log_level)
         
         #open our tcp/ip socket
@@ -41,21 +41,30 @@ class GdbRemote(object):
         except socket.error as msg:
             this.log.error('Bind failed. Error Code : ' + \
                             str(msg[0]) + ' Message ' + msg[1] )
-            raise this.GdbRemoteException()
+            raise this.PortTakenException()
 
-        this.log.info( 'Listening on port: ' + str(tcp_port))
-        this.sock.listen(1) #not sure why 1
+        this.log.info( 'Bound to port: ' + str(tcp_port))
 
         #remember the callback function
         this.callback = callback
        
         # https://opensource.apple.com/source/gdb/gdb-1469/src/gdb/arm-tdep.c.auto.html        
-        this.regs = [ "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", 
-                     "r9", "r10", "r11", "r12", "sp", "lr", "pc", 
-                     "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "fps",
-                     "cpsr", ]
+        this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 
+                        'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc', 
+                        'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'fps', 
+                        'cpsr', ]
+        this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 'r5':0, 
+                        'r6':0, 'r7':0, 'r8':0, 'r9':0, 'r10':0, 'r11':0, 
+                        'r12':0, 'sp':0, 'lr':0, 'pc':0, 
+                        'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 'f5':8, 'f6':8, 
+                        'f7':8, 'fps':0, 
+                        'cpsr':0, }
+
+
 
     def run(this):
+
+        this.sock.listen(1) #not sure why 1
         
         while True:
             [conn, client] = this.sock.accept()
@@ -66,7 +75,7 @@ class GdbRemote(object):
             plus = conn.recv(1)
             assert(plus == '+')
 
-            this.callback('HALT')
+            this.callback('CTRLC')
             try:
                 while True:
                     msg  = this._gdb_recv( conn)
@@ -119,7 +128,7 @@ class GdbRemote(object):
     #
     def _process_D(this, ):
         this.log.debug('gdb detaching')
-        this.callback("RESUME")
+        this.callback('c')
         return "OK"
 
     #
@@ -133,8 +142,8 @@ class GdbRemote(object):
     #
     #
     def _process_k(this):
-        this.log.warn("Kill command")
-        this.callback("RESUME")
+        this.log.warn("Kill command, just continueing?")
+        this.callback('c')
         return None
 
     #
@@ -143,9 +152,8 @@ class GdbRemote(object):
     def _process_g(this, subcmd):
         this.log.debug('Read all Regs')
         resp = ''
-        for r in this.regs:
-            val = this.callback('REG READ ' + r)
-            val = struct.pack('<I', val).encode('hex')
+        for ix in range(0, len(this.regs)):
+            val = this._process_p(hex(ix))
             resp += val
 
         return resp
@@ -156,10 +164,12 @@ class GdbRemote(object):
     def _process_m(this, subcmd):
         this.log.debug('Memory Read')
         addr,size = subcmd.split(',')
-        assert(size == '4')
-        val = this.callback('MEM READ 0x'+addr + ' ' + size)
+        addr = int(addr, 16)
+        size = int(size,16) * 8 # translate bytes->bits
+        val = this.callback('m', addr, size )
+        assert( len(val)  < 18) # int overflow?
         val = int(val, 16)
-        val = struct.pack('<I', val).encode('hex')
+        val = struct.pack('<I', val).encode('hex') # lit endian
         resp = val
         return resp
 
@@ -170,11 +180,11 @@ class GdbRemote(object):
         this.log.debug('Register Read')
         reg =  int( subcmd, 16)
         reg = this.regs[reg]
-        val = this.callback('REG READ '+ reg)
-        val = int(val,16)
-        val = struct.pack('<I',val).encode('hex')
-        resp = val
-        return resp
+        val = this.callback('p', (reg) )
+        val = int(val, 16) #convert to int
+        val = struct.pack('<I',val).encode('hex') #lit endian hex
+        val = '00' * this.regsPads[reg] + val # add some front-padding
+        return val
 
     #
     # general query commands
@@ -295,8 +305,10 @@ class GdbRemote(object):
 #
 #
 #
-def stub(msg):
-    print("="*40 + "\n" + msg + "\n" + "="*40)
+def stub(cmd, data=None):
+    print("="*40 + "\n" + cmd),
+    if (data != None): print ("\n" + str(data) + "\n"),
+    print ("="*40)
     return '0x300'
 
 
@@ -304,6 +316,7 @@ if __name__ == '__main__':
    
     logging.basicConfig( level=logging.WARN, 
                             format='%(levelname)s %(name)s %(message)s')
+
     port = 10001
 
     if (len(sys.argv) > 1):
