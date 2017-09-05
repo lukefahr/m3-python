@@ -755,16 +755,22 @@ class mbus_controller( object):
 
                 this.flag_addr = None
 
-            def cmd_p(this, reg):
-                assert(this.flag_addr != None)
-                this.log.info('reg_read: ' + str(reg))
-                return hex(this.rf[reg])
-
             def cmd_m(this, addr, size):
                 this.log.info('mem read: ' + hex(addr) + ' of ' + str(size))
                 assert(this.flag_addr != None)
                 assert(size <= 32)
                 return hex(this.mem[(addr,size)])
+                
+            def cmd_p(this, reg):
+                assert(this.flag_addr != None)
+                this.log.info('reg_read: ' + str(reg))
+                return hex(this.rf[reg])
+
+            def cmd_s(this, ):
+                assert(this.flag_addr != None)
+                this.log.info('single-step ')
+
+
 
             def reg_write(this, reg, val):
                 assert(this.flag_addr != None)

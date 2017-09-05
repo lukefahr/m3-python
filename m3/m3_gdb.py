@@ -112,6 +112,8 @@ class GdbRemote(object):
         elif cmdType == 'm': return this._process_m(subCmd)
         elif cmdType == 'p': return this._process_p(subCmd)
         elif cmdType == 'q': return this._process_q(subCmd)
+        elif cmdType == 's': return this._process_s(subCmd)
+        elif cmdType == 'v': return this._process_v(subCmd)
         else: raise Exception()
 
         return None
@@ -221,7 +223,34 @@ class GdbRemote(object):
             #this has to do with tracing, we're not handling that yet
             return ""
         else: raise Exception()
-    
+
+    #
+    # handle single-stepping
+    #
+    def _process_s(this, subcmd):
+        this.log.debug('Single-Step')
+        if subcmd == '': 
+            val = this.callback('s')
+        else: raise Exception()
+            
+        assert(subcmd == '')
+        val = this.callback('s')
+        val = int(val, 16) #convert to int
+        val = struct.pack('<I',val).encode('hex') #lit endian hex
+        val = '00' * this.regsPads[reg] + val # add some front-padding
+        return val
+
+
+    #
+    # handle v (mostly vCont)
+    #
+    def _process_v(this, subcmd):
+        if subcmd.startswith('Cont?'):
+            return "vCont;cs"
+        else: raise Exception() 
+
+
+
     #
     #
     #
@@ -305,9 +334,10 @@ class GdbRemote(object):
 #
 #
 #
-def stub(cmd, data=None):
+def stub(cmd, *args, **kwargs):
     print("="*40 + "\n" + cmd),
-    if (data != None): print ("\n" + str(data) + "\n"),
+    if (len(args)!= None): print ("\n" + str(args) + "\n"),
+    if (len(kwargs)!= None): print ("\n" + str(kwargs) + "\n"),
     print ("="*40)
     return '0x300'
 
