@@ -107,6 +107,11 @@ def get_logger(name):
 
 	return l
 
+#maintain API compatability with the 
+# logger module
+def getLogger(name):
+    return get_logger(name)
+
 #def log_level_from_environment():
 #	try:
 #		os.environ['ICE_DEBUG']
