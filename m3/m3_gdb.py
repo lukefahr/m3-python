@@ -20,7 +20,7 @@ except ValueError: import logging as m3_logging
 
 class GdbRemote(object):
 
-    class GdbRemoteException(Exception): pass
+    class UnsupportedException(Exception): pass
     class PortTakenException(Exception): pass
     class DisconnectException(Exception): pass
     class CtrlCException(Exception): pass
@@ -107,6 +107,7 @@ class GdbRemote(object):
         if cmdType == '?': return this._process_Question()
         elif cmdType == 'D': return this._process_D()
         elif cmdType == 'H': return this._process_H(subCmd)
+        elif cmdType == 'Z': return this._process_Z(subCmd)
         elif cmdType == 'k': return this._process_k()
         elif cmdType == 'g': return this._process_g(subCmd)
         elif cmdType == 'm': return this._process_m(subCmd)
@@ -114,7 +115,8 @@ class GdbRemote(object):
         elif cmdType == 'q': return this._process_q(subCmd)
         elif cmdType == 's': return this._process_s(subCmd)
         elif cmdType == 'v': return this._process_v(subCmd)
-        else: raise Exception()
+        elif cmdType == 'z': return this._process_z(subCmd)
+        else: raise this.UnsupportedException( cmdType)
 
         return None
 
@@ -140,6 +142,21 @@ class GdbRemote(object):
         this.log.debug("unsupported H command")
         return ""
 
+    #
+    #
+    #
+    def _process_Z(this, subcmd):
+        this.log.debug("Breakpoint Set command")
+        zType,zAddr,zKind = subcmd.split(',')
+        if zType ==  '0':
+            assert(';' not in zKind) # no condition list
+            zAddr = int(zAddr, 16)
+            zKind = int(zKind, 16)
+            assert(zKind in [ 2 ]) # ever need a 4 byte breakpoint?
+            this.callback(zType,zAddr,zKind)
+            return "OK"
+            
+        else: raise this.UnsupportedException(zType)
     #
     #
     #
@@ -222,7 +239,7 @@ class GdbRemote(object):
         elif subcmd.startswith('TStatus'):
             #this has to do with tracing, we're not handling that yet
             return ""
-        else: raise Exception()
+        else: raise this.UnsupportedException( subcmd)
 
     #
     # handle single-stepping
@@ -231,7 +248,7 @@ class GdbRemote(object):
         this.log.debug('Single-Step')
         if subcmd == '': 
             val = this.callback('s')
-        else: raise Exception()
+        else: raise this.UnsupportedException(subcmd)
             
         assert(subcmd == '')
         val = this.callback('s')
@@ -247,8 +264,22 @@ class GdbRemote(object):
     def _process_v(this, subcmd):
         if subcmd.startswith('Cont?'):
             return "vCont;cs"
-        else: raise Exception() 
+        else: raise this.UnsupportedException( subcmd) 
 
+    #
+    #
+    #
+    def _process_z(this, subcmd):
+        this.log.debug("Breakpoint clear command")
+        zType,zAddr,zKind = subcmd.split(',')
+        if zType ==  '0':
+            zAddr = int(zAddr, 16)
+            zKind = int(zKind, 16)
+            assert(zKind in [ 2 ]) # ever need a 4 byte breakpoint?
+            this.callback(zType,zAddr,zKind)
+            return "OK"
+            
+        else: raise this.UnsupportedException(zType)
 
 
     #
@@ -335,9 +366,9 @@ class GdbRemote(object):
 #
 #
 def stub(cmd, *args, **kwargs):
-    print("="*40 + "\n" + cmd),
-    if (len(args)!= None): print ("\n" + str(args) + "\n"),
-    if (len(kwargs)!= None): print ("\n" + str(kwargs) + "\n"),
+    print("="*40 + "\n" + cmd)
+    if (len(args)!= None): print (str(args) )
+    if (len(kwargs)!= None): print (str(kwargs))
     print ("="*40)
     return '0x300'
 
