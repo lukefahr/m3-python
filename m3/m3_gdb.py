@@ -82,12 +82,6 @@ class GdbRemote(object):
                 if timeout == None: continue
                 else: return None
     
-    def _gdbPutGet(this, cmd, *args, **kwargs):
-        this._gdbPut(cmd, *args, **kwargs)
-        data = this._gdbGet()
-        print ("data: " + str(data))
-        return data
-                     
     def run(this,): 
         this.RxTid = threading.Thread( target=this._gdb_rx, )
         this.RxTid.daemon = True
@@ -124,14 +118,14 @@ class GdbRemote(object):
             except this.DisconnectException: 
                 this.log.info('Closing connection with: ' + str(client[0]))
                 conn.close()
-                this.put('CTRL_QUIT')
+                this._gdbPut('CTRL_QUIT')
                 this.put('GDB_QUIT')
                 TxTid.join()
             except this.CtrlCException:
                 this.log.info('Caught CTRL+C')
                 this.log.info('Closing connection with: ' + str(client[0]))
                 conn.close()
-                this.put('CTRL_QUIT')
+                this._gdbPut('CTRL_QUIT')
                 this.put('GDB_QUIT')
                 TxTid.join()
 
@@ -161,9 +155,9 @@ class GdbRemote(object):
         if cmdType == '+': return
         if cmdType == '?': 
             this._process_Question()
-        elif cmdType in [ 'D', 'c', 'k', 'g' ]: 
+        elif cmdType in [ 'D', 'c', 'k', 'g', 's' ]: 
             this._gdbPut(cmdType)
-        elif cmdType in [ 'Z', 'm', 'p', 'q', 's', 'v', 'z' ]: 
+        elif cmdType in [ 'Z', 'm', 'p', 'q', 'v', 'z' ]: 
             this._gdbPut(cmdType, subCmd)
         elif cmdType in [ 'H', ]: 
             this._unsupported(cmdType, subCmd)
@@ -206,15 +200,15 @@ class GdbRemote(object):
             if chr(0x03) in rawdata:
                 raise this.CtrlCException()
             
-            # acks "+" at the beginning can be safely removed
-            if rawdata[0] == '+':
-                rawdata = rawdata[1:]
-
-            # static buffer to tack on the new data
+                # static buffer to tack on the new data
             # (plus fun way to make a static-ish function variable)
             try: this._buf_data += rawdata
             except AttributeError: this._buf_data = rawdata
-            
+
+            # acks "+" at the beginning can be safely removed
+            if this._buf_data[0] == '+':
+                this._buf_data= this._buf_data[1:]
+        
             msg = None
             
             chkIdx = this._buf_data.find('#')
@@ -299,8 +293,8 @@ class testing_gdb_ctrl(object):
         return 'S05'
 
     def cmd_Z(this, subcmd):
-        addr,size= subcmd.split(',')
-        this.log.info('breakpoint set: ' + hex(addr))
+        zType,addr,size= subcmd.split(',')
+        this.log.info('breakpoint set: ' + addr + 'type: ' + zType )
         return 'OK'
 
     def cmd_c(this):
@@ -368,11 +362,11 @@ class testing_gdb_ctrl(object):
         this.log.info('single-step ')
         return 'S05'
     
-    def _cmd_v(this, subcmd):
+    def cmd_v(this, subcmd):
         if subcmd.startswith('Cont?'):
             this.log.debug('vCont')
             return "vCont;cs"
-        else: assert(false) 
+        else: assert(False) 
 
     def cmd_z(this, subcmd):
         addr,size= subcmd.split(',')
@@ -401,11 +395,11 @@ if __name__ == '__main__':
         cmd, args, kwargs = gdb.get()
         cmd = 'cmd_'+cmd
 
-        if cmd == 'CTRL_QUIT': 
+        if cmd == 'cmd_CTRL_QUIT': 
             logger.info('GDB CTRL Quiting')
             break
         else : 
             func = getattr(ctrl, cmd)
             ret = func(*args, **kwargs)
-            gdb.put(ret)
+            if ret != None: gdb.put(ret)
 
