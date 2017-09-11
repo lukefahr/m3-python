@@ -8,9 +8,11 @@
 import binascii
 import logging
 import os
+import queue 
 import socket
 import struct
 import sys
+import threading
 
 #inspired by
 # https://github.com/0vercl0k/ollydbg2-python/blob/master/samples/gdbserver/gdbserver.py#L147
@@ -25,7 +27,7 @@ class GdbRemote(object):
     class DisconnectException(Exception): pass
     class CtrlCException(Exception): pass
 
-    def __init__(this, callback, tcp_port = 10001, log_level = logging.WARN):
+    def __init__(this, tcp_port = 10001, log_level = logging.WARN):
         
         # setup our log
         this.log = m3_logging.getLogger( type(this).__name__)
@@ -44,10 +46,11 @@ class GdbRemote(object):
             raise this.PortTakenException()
 
         this.log.info( 'Bound to port: ' + str(tcp_port))
+        
+        # inter-thread queues
+        this.respQ = queue.Queue()
+        this.reqQ = queue.Queue()
 
-        #remember the callback function
-        this.callback = callback
-       
         # https://opensource.apple.com/source/gdb/gdb-1469/src/gdb/arm-tdep.c.auto.html        
         this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 
                         'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc', 
@@ -60,9 +63,41 @@ class GdbRemote(object):
                         'f7':8, 'fps':0, 
                         'cpsr':0, }
 
+    def get(this,):
+        while True:
+            try: return this.reqQ.get(True, 10)
+            except queue.Empty: pass
 
+    def put(this,msg):
+        this.respQ.put(msg)
 
-    def run(this):
+    def _gdbPut(this, cmd, *args, **kwargs):
+        this.reqQ.put( (cmd, args, kwargs) )
+    
+    def _gdbGet(this, timeout=None):
+        ztime = 10 if timeout == None else timeout
+        while True:
+            try: return this.respQ.get(True, ztime)
+            except queue.Empty: 
+                if timeout == None: continue
+                else: return None
+    
+    def _gdbPutGet(this, cmd, *args, **kwargs):
+        this._gdbPut(cmd, *args, **kwargs)
+        data = this._gdbGet()
+        print ("data: " + str(data))
+        return data
+                     
+    def run(this,): 
+        this.RxTid = threading.Thread( target=this._gdb_rx, )
+        this.RxTid.daemon = True
+        this.RxTid.start()
+        this.log.debug("Started GDB Thread")
+        
+    #
+    # Internal Thread's main loop
+    #
+    def _gdb_rx(this):
 
         this.sock.listen(1) #not sure why 1
         
@@ -75,24 +110,43 @@ class GdbRemote(object):
             plus = conn.recv(1)
             assert(plus == '+')
 
-            this.callback('CTRLC')
+            # start a response thread
+            TxTid = threading.Thread( target=this._gdb_tx, args=(conn,) )
+            TxTid.daemon = True
+            TxTid.start()
+
             try:
                 while True:
                     msg  = this._gdb_recv( conn)
-
-                    resp = this._process_command(msg)
-
-                    if resp != None:
-                        this.log.debug('Sending: ' + str(resp))
-                        this._gdb_resp(conn, resp)
+                    if msg: 
+                        this._process_command(msg)
 
             except this.DisconnectException: 
                 this.log.info('Closing connection with: ' + str(client[0]))
                 conn.close()
-            except this.CtrlCException: 
+                this.put('CTRL_QUIT')
+                this.put('GDB_QUIT')
+                TxTid.join()
+            except this.CtrlCException:
                 this.log.info('Caught CTRL+C')
-                return
+                this.log.info('Closing connection with: ' + str(client[0]))
+                conn.close()
+                this.put('CTRL_QUIT')
+                this.put('GDB_QUIT')
+                TxTid.join()
 
+    #
+    #
+    #
+    def _gdb_tx(this, conn):
+        while True:
+            msg = this._gdbGet()
+            if msg == 'GDB_QUIT': 
+                return
+            elif msg == '+':
+                conn.send(msg)
+            else:
+                this._gdb_resp(conn, msg) 
 
     #
     #
@@ -103,185 +157,38 @@ class GdbRemote(object):
 
         cmdType = cmd[0]
         subCmd = cmd[1:]
-        
-        if cmdType == '?': return this._process_Question()
-        elif cmdType == 'D': return this._process_D()
-        elif cmdType == 'H': return this._process_H(subCmd)
-        elif cmdType == 'Z': return this._process_Z(subCmd)
-        elif cmdType == 'k': return this._process_k()
-        elif cmdType == 'g': return this._process_g(subCmd)
-        elif cmdType == 'm': return this._process_m(subCmd)
-        elif cmdType == 'p': return this._process_p(subCmd)
-        elif cmdType == 'q': return this._process_q(subCmd)
-        elif cmdType == 's': return this._process_s(subCmd)
-        elif cmdType == 'v': return this._process_v(subCmd)
-        elif cmdType == 'z': return this._process_z(subCmd)
+       
+        if cmdType == '+': return
+        if cmdType == '?': 
+            this._process_Question()
+        elif cmdType in [ 'D', 'c', 'k', 'g' ]: 
+            this._gdbPut(cmdType)
+        elif cmdType in [ 'Z', 'm', 'p', 'q', 's', 'v', 'z' ]: 
+            this._gdbPut(cmdType, subCmd)
+        elif cmdType in [ 'H', ]: 
+            this._unsupported(cmdType, subCmd)
         else: raise this.UnsupportedException( cmdType)
-
-        return None
 
     #
     #
     #
     def _process_Question(this):
-        # Report why the target is halted
-        # SIGTRAP?  Why not...
-        return "S05"
-    #
-    #
-    #
-    def _process_D(this, ):
-        this.log.debug('gdb detaching')
-        this.callback('c')
-        return "OK"
+        this.log.debug('? command')
+        this._gdbPut('_ctrlc_')
+        this._gdbPut('_question_')
+
+
 
     #
     #
     #
-    def _process_H(this, subcmd):
-        this.log.debug("unsupported H command")
-        return ""
+    def _unsupported(this, cmdType, subCmd):
+        this.log.info("unsupported Type:" + str(cmdType))
+        this.log.debug("SubCommand:" + str(subCmd))
+        this.put("") #by-pass control thread
 
-    #
-    #
-    #
-    def _process_Z(this, subcmd):
-        this.log.debug("Breakpoint Set command")
-        zType,zAddr,zKind = subcmd.split(',')
-        if zType ==  '0':
-            assert(';' not in zKind) # no condition list
-            zAddr = int(zAddr, 16)
-            zKind = int(zKind, 16)
-            assert(zKind in [ 2 ]) # ever need a 4 byte breakpoint?
-            this.callback(zType,zAddr,zKind)
-            return "OK"
-            
-        else: raise this.UnsupportedException(zType)
-    #
-    #
-    #
-    def _process_k(this):
-        this.log.warn("Kill command, just continueing?")
-        this.callback('c')
-        return None
-
-    #
-    # Read all regs
-    #
-    def _process_g(this, subcmd):
-        this.log.debug('Read all Regs')
-        resp = ''
-        for ix in range(0, len(this.regs)):
-            val = this._process_p(hex(ix))
-            resp += val
-
-        return resp
-  
-    #
-    # memory read
-    #
-    def _process_m(this, subcmd):
-        this.log.debug('Memory Read')
-        addr,size = subcmd.split(',')
-        addr = int(addr, 16)
-        size = int(size,16) * 8 # translate bytes->bits
-        val = this.callback('m', addr, size )
-        assert( len(val)  < 18) # int overflow?
-        val = int(val, 16)
-        val = struct.pack('<I', val).encode('hex') # lit endian
-        resp = val
-        return resp
-
-    #
-    # read specific reg
-    #
-    def _process_p(this, subcmd):
-        this.log.debug('Register Read')
-        reg =  int( subcmd, 16)
-        reg = this.regs[reg]
-        val = this.callback('p', (reg) )
-        val = int(val, 16) #convert to int
-        val = struct.pack('<I',val).encode('hex') #lit endian hex
-        val = '00' * this.regsPads[reg] + val # add some front-padding
-        return val
-
-    #
-    # general query commands
-    #
-    def _process_q(this, subcmd):
-        
-        if subcmd.startswith('C'):
-            # asking about current thread, 
-            # again, what threads...
-            return ""
-        elif subcmd.startswith('fThreadInfo'):
-            # info on threads? what threads?
-            return ""
-        elif subcmd.startswith('L'):
-            # legacy form of fThreadInfo
-            return ""
-        elif subcmd.startswith('Attached'):
-            # did we attach to a process, or spawn a new one
-            # processes?
-            return ""
-        elif subcmd.startswith('Offsets'):
-            # did we translate the sections vith virtual memory?
-            # virtual memory?
-            return ""
-        elif subcmd.startswith('Supported'):
-            # startup command
-            this.log.debug('qSupported')
-            return "PacketSize=4096"
-        elif subcmd.startswith('Symbol'):
-            # gdb is offering us the symbol table
-            return "OK"
-
-        elif subcmd.startswith('TStatus'):
-            #this has to do with tracing, we're not handling that yet
-            return ""
-        else: raise this.UnsupportedException( subcmd)
-
-    #
-    # handle single-stepping
-    #
-    def _process_s(this, subcmd):
-        this.log.debug('Single-Step')
-        if subcmd == '': 
-            val = this.callback('s')
-        else: raise this.UnsupportedException(subcmd)
-            
-        assert(subcmd == '')
-        val = this.callback('s')
-        val = int(val, 16) #convert to int
-        val = struct.pack('<I',val).encode('hex') #lit endian hex
-        val = '00' * this.regsPads[reg] + val # add some front-padding
-        return val
-
-
-    #
-    # handle v (mostly vCont)
-    #
-    def _process_v(this, subcmd):
-        if subcmd.startswith('Cont?'):
-            return "vCont;cs"
-        else: raise this.UnsupportedException( subcmd) 
-
-    #
-    #
-    #
-    def _process_z(this, subcmd):
-        this.log.debug("Breakpoint clear command")
-        zType,zAddr,zKind = subcmd.split(',')
-        if zType ==  '0':
-            zAddr = int(zAddr, 16)
-            zKind = int(zKind, 16)
-            assert(zKind in [ 2 ]) # ever need a 4 byte breakpoint?
-            this.callback(zType,zAddr,zKind)
-            return "OK"
-            
-        else: raise this.UnsupportedException(zType)
-
-
+    
+    
     #
     #
     #
@@ -293,11 +200,15 @@ class GdbRemote(object):
             if not rawdata:
                 raise this.DisconnectException()
 
+            this.log.debug('RX: ' + str(rawdata) ) 
+
             # CTRL+C
             if chr(0x03) in rawdata:
                 raise this.CtrlCException()
-
-            this.log.debug('RX: ' + str(rawdata) ) 
+            
+            # acks "+" at the beginning can be safely removed
+            if rawdata[0] == '+':
+                rawdata = rawdata[1:]
 
             # static buffer to tack on the new data
             # (plus fun way to make a static-ish function variable)
@@ -305,8 +216,8 @@ class GdbRemote(object):
             except AttributeError: this._buf_data = rawdata
             
             msg = None
-            chkIdx = this._buf_data.find('#')
             
+            chkIdx = this._buf_data.find('#')
             # look for a checksum marker + 2 checksum bytes
             if (chkIdx > 0) and (len(this._buf_data) >= chkIdx + 3):
                 #this.log.debug('Found # at: ' + str(chkIdx) )
@@ -335,8 +246,8 @@ class GdbRemote(object):
                 #this.log.debug('Advanced buffered data: ' + \
                     # str(this._buf_data) ) 
 
-            #ack message
-            conn.send('+')
+                #ack message
+                this.put('+') # bypass CTRL 
 
             return msg
 
@@ -358,19 +269,115 @@ class GdbRemote(object):
         this.log.debug('TX: ' + str(gdb_msg))
         conn.send( gdb_msg )
 
-        rawdata= conn.recv(1)
-        assert(rawdata[0] == '+')
-
    
 #
 #
 #
-def stub(cmd, *args, **kwargs):
-    print("="*40 + "\n" + cmd)
-    if (len(args)!= None): print (str(args) )
-    if (len(kwargs)!= None): print (str(kwargs))
-    print ("="*40)
-    return '0x300'
+class testing_gdb_ctrl(object):
+    
+    def __init__(this):
+
+        this.log = m3_logging.getLogger( type(this).__name__)
+        this.log.setLevel(logging.DEBUG)
+        this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 
+                        'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc', 
+                        'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'fps', 
+                        'cpsr', ]
+        this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 'r5':0, 
+                        'r6':0, 'r7':0, 'r8':0, 'r9':0, 'r10':0, 'r11':0, 
+                        'r12':0, 'sp':0, 'lr':0, 'pc':0, 
+                        'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 'f5':8, 'f6':8, 
+                        'f7':8, 'fps':0, 
+                        'cpsr':0, }
+
+    def cmd__question_(this,):
+        this.log.info("? Cmd")
+        return 'S05'
+
+    def cmd__ctrlc_(this,):
+        this.log.info("CTRL+C (HALT)")
+        return 'S05'
+
+    def cmd_Z(this, subcmd):
+        addr,size= subcmd.split(',')
+        this.log.info('breakpoint set: ' + hex(addr))
+        return 'OK'
+
+    def cmd_c(this):
+        this.log.info("continue")
+
+    def cmd_g(this, ):
+        this.log.debug('Read all Regs')
+        resp = ''
+        for ix in range(0, len(this.regs)):
+            val = this.cmd_p( this.regs[ix] )
+            resp += val
+        return resp
+
+    def cmd_m(this, subcmd):
+        addr,size_bytes= subcmd.split(',')
+        addr,size_bytes = map(lambda x: int(x, 16), [addr, size_bytes])
+        this.log.info('mem read: ' + hex(addr) + ' of ' + str(size_bytes))
+        if size_bytes == 4:
+            return struct.pack('<I',0x46c046c0).encode('hex') #lit endian hex
+        else: 
+            return struct.pack('<H',0x46c).encode('hex') #lit endian hex
+                
+    def cmd_p(this, subcmd):
+        reg = subcmd
+        this.log.info('reg_read: ' + str(reg))
+        val = 0x1234
+        val = struct.pack('<I',val).encode('hex') #lit endian hex
+        val = '00' * this.regsPads[reg] + val # add some front-padding
+        return val
+
+    def cmd_q(this, subcmd):
+        this.log.debug('Query')
+        if subcmd.startswith('C'):
+            # asking about current thread, 
+            # again, what threads...
+            return ""
+        elif subcmd.startswith('fThreadInfo'):
+            # info on threads? what threads?
+            return ""
+        elif subcmd.startswith('L'):
+            # legacy form of fThreadInfo
+            return ""
+        elif subcmd.startswith('Attached'):
+            # did we attach to a process, or spawn a new one
+            # processes?
+            return ""
+        elif subcmd.startswith('Offsets'):
+            # did we translate the sections vith virtual memory?
+            # virtual memory?
+            return ""
+        elif subcmd.startswith('Supported'):
+            # startup command
+            this.log.debug('qSupported')
+            return "PacketSize=4096"
+        elif subcmd.startswith('Symbol'):
+            # gdb is offering us the symbol table
+            return "OK"
+        elif subcmd.startswith('TStatus'):
+            #this has to do with tracing, we're not handling that yet
+            return ""
+        else: raise this.UnsupportedException( subcmd)
+
+
+    def cmd_s(this, ):
+        this.log.info('single-step ')
+        return 'S05'
+    
+    def _cmd_v(this, subcmd):
+        if subcmd.startswith('Cont?'):
+            this.log.debug('vCont')
+            return "vCont;cs"
+        else: assert(false) 
+
+    def cmd_z(this, subcmd):
+        addr,size= subcmd.split(',')
+        this.log.info('breakpoint clear: ' + hex(addr))
+        return 'OK'
 
 
 if __name__ == '__main__':
@@ -386,5 +393,19 @@ if __name__ == '__main__':
                port = int(arg.split("=")[1])
                print 'set port=' + str(port)
 
-    gdb = GdbRemote( callback=stub, tcp_port=port, log_level = logging.DEBUG)
+    ctrl = testing_gdb_ctrl()
+    gdb = GdbRemote( tcp_port=port, log_level = logging.DEBUG)
     gdb.run()
+
+    while True: 
+        cmd, args, kwargs = gdb.get()
+        cmd = 'cmd_'+cmd
+
+        if cmd == 'CTRL_QUIT': 
+            logger.info('GDB CTRL Quiting')
+            break
+        else : 
+            func = getattr(ctrl, cmd)
+            ret = func(*args, **kwargs)
+            gdb.put(ret)
+
