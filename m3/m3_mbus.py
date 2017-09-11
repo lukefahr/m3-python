@@ -412,11 +412,11 @@ class mbus_controller( object):
         self.parser_gdb.set_defaults(func=self.cmd_gdb)
 
 
-    
-
-
     def cmd_program(self):
-        
+        '''
+        Programs the PRC over MBUS
+        '''
+
         self.m3_ice.dont_do_default("Run power-on sequence", 
                     self.m3_ice.power_on)
         self.m3_ice.dont_do_default("Reset M3", self.m3_ice.reset_m3)
@@ -480,7 +480,8 @@ class mbus_controller( object):
         # then write each addr,chunk over mbus
         logger.debug ( 'splitting binfile into ' + str(chunk_size_bytes) 
                             + ' byte chunks')
-        payload_chunks = self.split_transmission(datafile, chunk_size_bytes)
+        payload_chunks = [ datafile[i:i+chunk_size_bytes] for i in \
+                        range(0, len(datafile), chunk_size_bytes) ]
         payload_addrs = range(0, len(datafile), chunk_size_bytes) 
 
         for mem_addr, payload in zip(payload_addrs, payload_chunks):
@@ -500,30 +501,17 @@ class mbus_controller( object):
 
         # @TODO: add code here to verify the write? 
 
-        #mbus_addr = struct.pack(">I", 0x00000013) 
-        #read_req = struct.pack(">I",  0x0A000080) 
-        #dma_addr = struct.pack(">I",  0x00000000) 
-        #logger.debug("sending read req... ")
-        #self.m3_ice.ice.mbus_send(mbus_addr, read_req + dma_addr)
-        #time.sleep(0.1)
-        
         # see above, just using RUN_CPU MBUS register again
         clear_data= struct.pack(">I", 0x10000001)  # 1 clears reset
         logger.debug("clearing RESET signal... ")
         self.m3_ice.ice.mbus_send(mbus_regwr, clear_data)
  
-
         logger.info("")
         logger.info("Programming complete.")
         logger.info("")
 
         return 
     
-
-    def split_transmission( self, payload, chunk_size = 255):
-        return [ payload[i:i+chunk_size] for i in \
-                        range(0, len(payload), chunk_size) ]
-
 
 
 
