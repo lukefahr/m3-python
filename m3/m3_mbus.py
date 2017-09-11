@@ -515,6 +515,7 @@ class mbus_controller( object):
 
 
 
+   
     #
     #
     #
@@ -716,10 +717,9 @@ class mbus_controller( object):
 
                 # might have to temporarially replace a trap
                 displaced_trap = False
-                pc = this.rf['pc']
-
+                pc = this.rf['pc'] - 4
+                
                 if (pc,16) in this.displaced_insts:
-                    assert(False) # this needs tested
                     this.log.debug("Trap @ " + hex(pc) + \
                             ", but we need the inst, fixing...")
                     this.cmd_z('0,' + hex(pc)[2:] + ',2')
