@@ -702,27 +702,28 @@ class ICE(object):
             ack,resp = self.send_message(msg_type, msg[0:FRAG_SIZE])
             if ack == 1: # (NAK)
                 if len(resp) == 0 and retry:
-                    logger.info("ICE NAK'ed request with 0 length, "\
-                                    "retrying once")
+                    logger.warning("ICE NAK'd request to send with no length "\
+                                    "sent field, assuming 0 and retrying")
                     retry = False
                     continue
-                else:
-                    logger.warning("ICE NAK'd request to send with no length "\
-                                    "sent field, assuming 0")
-                    return sent + 0
-                return sent + ord(resp)
+                else: return sent + ord(resp)
             else: retry = True
 
             msg = msg[FRAG_SIZE:]
             sent += FRAG_SIZE
             logger.debug("\tSent %d byte s, %d remaining" % (sent, len(msg)))
         logger.debug("Sending last message fragment, %d bytes long" % (len(msg)))
-        ack,resp = self.send_message(msg_type, msg)
-        if ack == 1:
-            if len(resp) == 0:
-                logger.warning("ICE NAK'd request to send with no length sent field, assuming 0")
-                return sent + 0
-            return sent + ord(resp)
+
+        while True:
+            ack,resp = self.send_message(msg_type, msg)
+            if ack == 1:
+                if len(resp) == 0 and retry:
+                    logger.warning("ICE NAK'd request to send with no length "\
+                                    "sent field, assuming 0 and retrying")
+                    retry = False
+                    continue
+                else: return sent + ord(resp)
+            else: break # no more while loop
         sent += len(msg)
         return sent
 
