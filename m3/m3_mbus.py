@@ -639,11 +639,12 @@ class mbus_controller( object):
                 data = binascii.unhexlify(data) 
                 
                 while size_bytes > 0:
-                    this.log.debug('Writing ' + repr(data[0]) + ' to ' \
+                    b = struct.unpack("B", data[0])[0]
+                    this.log.debug('Writing ' + hex(b) + ' to ' \
                         + hex(addr))
 
                     #this is not the most efficient, but it works...
-                    this.mem.forceWrite((addr,8), data[0])
+                    this.mem.forceWrite((addr,8), b)
 
                     size_bytes -= 1
                     addr += 1
