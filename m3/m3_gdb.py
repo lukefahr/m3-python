@@ -1,9 +1,18 @@
+#!/usr/bin/env python
+
 #
 #
 # Andrew Lukefahr
-# lukefahr@umich.edu
+# lukefahr@indiana.edu
 #
 #
+
+# Coerce Py2k to act more like Py3k
+from __future__ import (absolute_import, division, print_function, unicode_literals)
+from builtins import (
+        ascii, bytes, chr, dict, filter, hex, input, int, isinstance, list, map,
+        next, object, oct, open, pow, range, round, str, super, zip,
+        )
 
 import binascii
 import logging
@@ -50,18 +59,6 @@ class GdbRemote(object):
         # inter-thread queues
         this.respQ = queue.Queue()
         this.reqQ = queue.Queue()
-
-        # https://opensource.apple.com/source/gdb/gdb-1469/src/gdb/arm-tdep.c.auto.html        
-        this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 
-                        'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc', 
-                        'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'fps', 
-                        'cpsr', ]
-        this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 'r5':0, 
-                        'r6':0, 'r7':0, 'r8':0, 'r9':0, 'r10':0, 'r11':0, 
-                        'r12':0, 'sp':0, 'lr':0, 'pc':0, 
-                        'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 'f5':8, 'f6':8, 
-                        'f7':8, 'fps':0, 
-                        'cpsr':0, }
 
     def get(this,):
         while True:
@@ -316,7 +313,7 @@ class testing_gdb_ctrl(object):
             return struct.pack('<I',0x46c046c0).encode('hex') #lit endian hex
         else: 
             return struct.pack('<H',0x46c).encode('hex') #lit endian hex
-                
+
     def cmd_p(this, subcmd):
         reg = subcmd
         this.log.info('reg_read: ' + str(reg))
@@ -385,7 +382,7 @@ if __name__ == '__main__':
         for arg in sys.argv:
             if '--port=' in arg:
                port = int(arg.split("=")[1])
-               print 'set port=' + str(port)
+               print ('set port=' + str(port))
 
     ctrl = testing_gdb_ctrl()
     gdb = GdbRemote( tcp_port=port, log_level = logging.DEBUG)
