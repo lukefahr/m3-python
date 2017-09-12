@@ -138,6 +138,7 @@ class GdbRemote(object):
             if msg == 'GDB_QUIT': 
                 return
             elif msg == '+':
+                this.log.debug('TX: ' + str(msg))
                 conn.send(msg)
             else:
                 this._gdb_resp(conn, msg) 
@@ -290,7 +291,6 @@ class testing_gdb_ctrl(object):
 
     def cmd__ctrlc_(this,):
         this.log.info("CTRL+C (HALT)")
-        return 'S05'
 
     def cmd_Z(this, subcmd):
         zType,addr,size= subcmd.split(',')
@@ -369,8 +369,8 @@ class testing_gdb_ctrl(object):
         else: assert(False) 
 
     def cmd_z(this, subcmd):
-        addr,size= subcmd.split(',')
-        this.log.info('breakpoint clear: ' + hex(addr))
+        ztype,addr,size= subcmd.split(',')
+        this.log.info('breakpoint clear: ' + (addr))
         return 'OK'
 
 
@@ -396,7 +396,7 @@ if __name__ == '__main__':
         cmd = 'cmd_'+cmd
 
         if cmd == 'cmd_CTRL_QUIT': 
-            logger.info('GDB CTRL Quiting')
+            print ('GDB CTRL Quiting')
             break
         else : 
             func = getattr(ctrl, cmd)
