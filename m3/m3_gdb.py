@@ -115,14 +115,14 @@ class GdbRemote(object):
             except this.DisconnectException: 
                 this.log.info('Closing connection with: ' + str(client[0]))
                 conn.close()
-                this._gdbPut('CTRL_QUIT')
+                this._gdbPut('_quit_')
                 this.put('GDB_QUIT')
                 TxTid.join()
             except this.CtrlCException:
                 this.log.info('Caught CTRL+C')
                 this.log.info('Closing connection with: ' + str(client[0]))
                 conn.close()
-                this._gdbPut('CTRL_QUIT')
+                this._gdbPut('_quit_')
                 this.put('GDB_QUIT')
                 TxTid.join()
 
@@ -392,7 +392,7 @@ if __name__ == '__main__':
         cmd, args, kwargs = gdb.get()
         cmd = 'cmd_'+cmd
 
-        if cmd == 'cmd_CTRL_QUIT': 
+        if cmd == 'cmd__quit_': 
             print ('GDB CTRL Quiting')
             break
         else : 

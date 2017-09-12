@@ -843,7 +843,7 @@ class mbus_controller( object):
             cmd, args, kwargs = interface.get()
             cmd = 'cmd_'+cmd
 
-            if cmd == 'cmd_CTRL_QUIT': 
+            if cmd == 'cmd__quit_': 
                 logger.info('GDB CTRL Quiting')
                 break
             else : 
@@ -851,6 +851,3 @@ class mbus_controller( object):
                 ret = func(*args, **kwargs)
                 if ret != None: interface.put(ret)
 
-        return 
- 
-   
