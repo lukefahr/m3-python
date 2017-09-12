@@ -6,7 +6,7 @@
 #
 #
 # Andrew Lukefahr
-# lukefahr@umich.edu
+# lukefahr@indiana.edu
 #
 #
 
@@ -266,6 +266,20 @@ class Memory(object):
         else:
             this.local[key] = val # not the best, but ehh
 
+    #
+    def forceWrite(this,key,val):
+        '''
+        Always writes through to MBUS
+        '''
+        this.log.debug("fored-write: " + str(key) + ':' + str(val))
+        addr = key[0]
+        size = key[1]
+        assert( isinstance(addr, int))
+        assert( isinstance(val, int))
+        this.mbus.write_mem(addr,val,size)
+
+
+
 #
 class RegFile(Memory):
     '''
@@ -357,7 +371,17 @@ class RegFile(Memory):
             this.mbus.write_mem(mem_addr,val,32)
         else: 
             this.local[key] = val
-    
+
+    #
+    def forceWrite(this,key,val):
+        '''
+        Always writes through to MBUS
+        '''
+        this.log.debug("fored-write: " + str(key) + ':' + str(val))
+        assert( key in this.names)
+        mem_addr = this.base_addr + this.offsets[key]
+        this.mbus.write_mem(mem_addr,val,32)
+
     #
     def getLocal(this, key):
         if key in this.local:
@@ -607,6 +631,39 @@ class mbus_controller( object):
                 this.log.debug("waiting for HALT to trigger... ")
                 this._wait_for_flag()
 
+            def cmd_M(this, subcmd):
+                preamble, data = subcmd.split(':')
+                addr,size_bytes= preamble.split(',')
+                addr,size_bytes = map(lambda x: int(x, 16), [addr, size_bytes])
+                this.log.info('mem write: ' + hex(addr) + ' of ' + str(size_bytes))
+                data = binascii.unhexlify(data) 
+                
+                while size_bytes > 0:
+                    this.log.debug('Writing ' + repr(data[0]) + ' to ' \
+                        + hex(addr))
+
+                    #this is not the most efficient, but it works...
+                    this.mem.forceWrite((addr,8), data[0])
+
+                    size_bytes -= 1
+                    addr += 1
+                    data = data[1:]
+                return 'OK'
+
+            def cmd_P(this, subcmd):
+                reg,val = subcmd.split('=')
+                reg = int(reg, 16)
+                reg = this.regs[ reg]
+                # fix endiananess, conver to int
+                val = int(binascii.hexlify( binascii.unhexlify(val)[::-1]),16)
+                this.log.warn('register write :' + str(reg) + ' = ' + hex(val) )
+                this.rf.forceWrite(reg,val)
+                return "OK"
+
+            def cmd_X(this, subcmd):
+                this.log.info("Binary Memory Write not supported.")
+                return ""
+
             def cmd_Z(this, subcmd):
                 this.log.info("Breakpoint Set")
                 args = subcmd.split(',')
@@ -646,6 +703,9 @@ class mbus_controller( object):
                     resp += val
                 return resp
 
+            def cmd_k(this):
+                this.log.info("kill")
+                this.log.warn('Caught Kill Command, doing nothing')
 
             def cmd_m(this, subcmd):
                 args = subcmd.split(',')

@@ -155,7 +155,7 @@ class GdbRemote(object):
             this._process_Question()
         elif cmdType in [ 'D', 'c', 'k', 'g', 's' ]: 
             this._gdbPut(cmdType)
-        elif cmdType in [ 'Z', 'm', 'p', 'q', 'v', 'z' ]: 
+        elif cmdType in [ 'M', 'P', 'X', 'Z', 'm', 'p', 'q', 'v', 'z' ]: 
             this._gdbPut(cmdType, subCmd)
         elif cmdType in [ 'H', ]: 
             this._unsupported(cmdType, subCmd)
@@ -289,6 +289,35 @@ class testing_gdb_ctrl(object):
     def cmd__ctrlc_(this,):
         this.log.info("CTRL+C (HALT)")
 
+    def cmd_M(this, subcmd):
+        preamble, data = subcmd.split(':')
+        addr,size_bytes= preamble.split(',')
+        addr,size_bytes = map(lambda x: int(x, 16), [addr, size_bytes])
+        this.log.info('mem write: ' + hex(addr) + ' of ' + str(size_bytes))
+        data = binascii.unhexlify(data) 
+        while size_bytes > 0:
+            b = struct.unpack("B", data[0])[0]
+            this.log.debug('Writing ' + hex(b) + ' to ' \
+                + hex(addr))
+
+            size_bytes -= wr_size
+            addr += wr_size 
+            data = data[wr_size:]
+        return 'OK'
+
+    def cmd_P(this, subcmd):
+        reg,val = subcmd.split('=')
+        reg = int(reg, 16)
+        reg = this.regs[ reg]
+        # fix endiananess, conver to int
+        val = int(binascii.hexlify( binascii.unhexlify(val)[::-1]),16)
+        this.log.warn('register write :' + str(reg) + ' = ' + hex(val) )
+        return "OK"
+
+    def cmd_X(this, subcmd):
+        this.log.info("Binary Memory Write not supported.")
+        return ""
+
     def cmd_Z(this, subcmd):
         zType,addr,size= subcmd.split(',')
         this.log.info('breakpoint set: ' + addr + 'type: ' + zType )
@@ -304,6 +333,9 @@ class testing_gdb_ctrl(object):
             val = this.cmd_p( this.regs[ix] )
             resp += val
         return resp
+
+    def cmd_k(this):
+        this.log.info("kill")
 
     def cmd_m(this, subcmd):
         addr,size_bytes= subcmd.split(',')
