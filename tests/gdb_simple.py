@@ -136,7 +136,7 @@ class TestGdbSimple(object):
         rx_resp = cmd( s,'$qfThreadInfo#bb')
         assert( rx_resp == '$#00')
 
-        rx_resp = cmd( s,'+$qL1200000000000000000#50')
+        rx_resp = cmd( s,'$qL1200000000000000000#50')
         assert( rx_resp == '$#00')
 
         rx_resp = cmd( s,'$Hc-1#09')
@@ -214,6 +214,9 @@ class TestGdbSimple(object):
         assert( rx_resp == '$#00')
 
         rx_resp = cmd( s,'$z0,3a0,2#f8')
+        assert( rx_resp == '$OK#9a')
+       
+        rx_resp = cmd( s, '$P8=2a000000#78')
         assert( rx_resp == '$OK#9a')
 
         s.close()
