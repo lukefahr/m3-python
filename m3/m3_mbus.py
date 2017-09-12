@@ -433,6 +433,18 @@ class mbus_controller( object):
                 help="The short MBUS address of the PRC, e.g. 0x1",
                 default=mbus_controller.DEFAULT_PRC_PREFIX,
                 )
+        self.parser_gdb.add_argument('--port',
+                help="The TCP port GDBServer should bind to",
+                default='10001'
+                )
+        self.parser_gdb.add_argument('--input-mode',
+                help="Where should we look for input: \n"\
+                     "'gdb': start a gdbserver remote on --port,\n"
+                     "'direct': accept gdbserver commands directly from stdin",
+                default='gdb'
+                )
+
+
         self.parser_gdb.set_defaults(func=self.cmd_gdb)
 
 
@@ -548,23 +560,11 @@ class mbus_controller( object):
     #
     #
     def cmd_gdb(self):
-        #class GdbServ(object):
-        #    def __init__(this):
-        #        this.ONEYEAR = 365 * 24 * 60 * 60
-        #        this.rxq = Queue.Queue()
-        #        from m3_gdb import GdbRemote
-        #        this.gdb = GdbRemote(this._callback, tcp_port=10001,\
-        #                    log_level = logging.DEBUG)
-
-        #    def _callback(this,msg):
-        #        this.rxq.put(msg)
-
-        #    def recv(this):
-        #        return this.rxq.get(True, this.ONEYEAR)
-        #    def send(this,msg):
-        #        this.q
-       
+      
         class GdbCtrl(object):
+            '''
+            The backend controller that impliments the GDB commands
+            '''
 
             class PrcMBusInterface(MBusInterface):
                 # this will get used later
@@ -858,44 +858,59 @@ class mbus_controller( object):
                 this.log.debug("updating regFile at: " + hex(reg_addr))
                 this.rf.update_base_addr(reg_addr)
  
-
-       
         class InputManager(object):
+            '''
+            Alternate frontend that skips GDB and 
+            processes commands straight form stdin
+            '''
             def run(this): pass
             def get(this):
                 s = raw_input("<: ")
-                sp = s.split(' ', 1)
-                if len(sp) == 1:
-                    return sp[0], (), {}
+                if len(s) == 1:
+                    return s[0], (), {}
+                elif s[0] == '_':
+                    return s, (), {}
                 else:
-                    return sp[0], (sp[1]), {}
+                    return s[0], (s[1:]), {}
             def put(this, msg):
-                print ( str(msg) )
+                print (">: " + str(msg) )
 
         #pull prc_addr from command line
         # and convert to binary
         prc_addr = int(self.m3_ice.args.short_prefix, 16)
    
         #determin current logging level
-        debug = (m3_logging.logger.getEffectiveLevel() == 
-                        m3_logging.logging.DEBUG)
+        dbgLvl = m3_logging.logger.getEffectiveLevel()
 
         print ("Manually setting debug for this module")
-        log_level = logging.DEBUG 
+        dbgLvl = logging.DEBUG 
 
-        # gdb interface
-        from . import m3_gdb
-        try: # create and start our gdb thread
-            interface= m3_gdb.GdbRemote(tcp_port = 10001, \
-                                        log_level = log_level)
-        except m3_gdb.GdbRemote.PortTakenException:
-            logger.warn("Using Alternative Port: " + str(10002))
-            interface= m3_gdb.GdbRemote(tcp_port = 10002, 
-                        log_level = log_level)
-        #interface = InputManager()
+        #parse command line args
+        port =  int(self.m3_ice.args.port)
+        input_mode = self.m3_ice.args.input_mode.lower()
+
+        if input_mode == 'gdb':
+            # gdb interface
+            from . import m3_gdb
+            interface= m3_gdb.GdbRemote(tcp_port = port , log_level = dbgLvl )
+        elif input_mode == 'direct':
+            interface = InputManager()
+        else: raise Exception('Unsupported input_mode' + \
+                        str(self.m3_ice.args.input_mode) )
+
+        #try: # create and start our gdb thread
+        #except m3_gdb.GdbRemote.PortTakenException:
+        #    logger.warn("Using Alternative Port: " + str(10002))
+        #    interface= m3_gdb.GdbRemote(tcp_port = 10002, 
+        #                log_level = log_level)
 
         # create MBus Interface
-        ctrl = GdbCtrl( self.m3_ice.ice, prc_addr, log_level = log_level)
+        ctrl = GdbCtrl( self.m3_ice.ice, prc_addr, log_level = dbgLvl)
+
+        # @todo
+        # this will need a more advanced threading model at some point
+        # to process a CTRL+C  while waiting on continue
+        # currently, we interpret CTRL+C as terminate
 
         logger.debug ("GDB main loop")
         interface.run()                                        
