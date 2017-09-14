@@ -22,6 +22,11 @@ import socket
 import struct
 import sys
 import threading
+import time
+
+from m3.m3_mbus import MBusInterface
+from m3.m3_mbus import Memory
+from m3.m3_mbus import RegFile
 
 #inspired by
 # https://github.com/0vercl0k/ollydbg2-python/blob/master/samples/gdbserver/gdbserver.py#L147
@@ -106,25 +111,25 @@ class GdbRemote(object):
             TxTid.daemon = True
             TxTid.start()
 
-            try:
-                while True:
+            while True:
+                try:
                     msg  = this._gdb_recv( conn)
                     if msg: 
                         this._process_command(msg)
 
-            except this.DisconnectException: 
-                this.log.info('Closing connection with: ' + str(client[0]))
-                conn.close()
-                this._gdbPut('_quit_')
-                this.put('GDB_QUIT')
-                TxTid.join()
-            except this.CtrlCException:
-                this.log.info('Caught CTRL+C')
-                this.log.info('Closing connection with: ' + str(client[0]))
-                conn.close()
-                this._gdbPut('_quit_')
-                this.put('GDB_QUIT')
-                TxTid.join()
+                except this.CtrlCException:
+                    this.log.debug('Caught CTRL+C')
+                    this._gdbPut('_ctrlc_')
+
+                except this.DisconnectException: 
+                    # this is here to make testing easier, but isn't required
+                    this._gdbPut('_quit_')
+                    this.put('GDB_QUIT')
+                    break
+            
+            this.log.info('Closing connection with: ' + str(client[0]))
+            conn.close()
+            TxTid.join()
 
     #
     #
@@ -152,7 +157,7 @@ class GdbRemote(object):
        
         if cmdType == '+': return
         if cmdType == '?': 
-            this._process_Question()
+            this._gdbPut('_question_')
         elif cmdType in [ 'D', 'c', 'k', 'g', 's' ]: 
             this._gdbPut(cmdType)
         elif cmdType in [ 'M', 'P', 'X', 'Z', 'm', 'p', 'q', 'v', 'z' ]: 
@@ -160,16 +165,6 @@ class GdbRemote(object):
         elif cmdType in [ 'H', ]: 
             this._unsupported(cmdType, subCmd)
         else: raise this.UnsupportedException( cmdType)
-
-    #
-    #
-    #
-    def _process_Question(this):
-        this.log.debug('? command')
-        this._gdbPut('_ctrlc_')
-        this._gdbPut('_question_')
-
-
 
     #
     #
@@ -261,11 +256,427 @@ class GdbRemote(object):
         this.log.debug('TX: ' + str(gdb_msg))
         conn.send( gdb_msg )
 
+
+
+class GdbCtrl(object):
+    '''
+    The backend controller that impliments the GDB commands
+    '''
+
+    class PrcCtrl(object):
+        '''
+        Manages the PRC, allows for out-of-band halt responses
+        '''
+        
+        class HaltMBusInterface(MBusInterface):
+            ''' Allows us to override the _callback function '''
+            def __init__(this, halt, _ice, prc_addr, log_level):
+                super( halt.HaltMBusInterface, this).__init__(_ice, prc_addr,
+                                                        log_level)
+                this.halt = halt
+
+            def _callback(this,*args, **kwargs):
+                this.callback_queue.put((time.time(), args, kwargs))
+                # only put special messages in the halt.queue...
+                mbus_addr, mbus_data = args     
+                [mbus_addr_int] = struct.unpack(">I", mbus_addr)
+                if mbus_addr_int == 0xe0:
+                    this.halt.queue.put( (mbus_addr, mbus_data) )
+         
+        class HaltRegFile(RegFile):
+            ''' Allows us to override the update_base_addr function '''
+            def __init__(this, halt, mbus, base_addr, writeback, log_level):
+                super(halt.HaltRegFile, this).__init__(mbus, base_addr, \
+                                        writeback, log_level)
+                this.halt = halt
+            def update_base_addr(this, base_addr):
+                with this.halt.lock:
+                    return RegFile.update_base_addr(this,base_addr)
+            def __getitem__(this,key):
+                assert(this.halt.flag_addr != None)
+                with this.halt.lock:
+                    return RegFile.__getitem__(this,key)
+            def __setitem__(this,key,val):
+                assert(this.halt.flag_addr != None)
+                with this.halt.lock:
+                    return RegFile.__setitem__(this,key,val)
+            def forceWrite(this,key,val):
+                assert(this.halt.flag_addr != None)
+                with this.halt.lock:
+                    return RegFile.forceWrite(this,key,val)
+
+        def __init__(this, _ice, prc_addr, \
+                                        log_level = logging.WARN):
+            ''' 
+            Mostly a pass-through to MBUS, 
+            but starts a halt thread for out-of-band responses
+            '''
+            this.log = m3_logging.getLogger( type(this).__name__)
+            this.log.setLevel(log_level)
+            
+            # the addr of the interrupt flag, None = not interrupted
+            this.flag_addr = None
+
+            # what we call when halt is triggered
+            this.halt_cb = None
+
+            this.lock = threading.RLock()
+            this.queue = queue.Queue() # incomming PRC halt messages
+            this.stop = threading.Event() # set this to stop the halt thread
+
+            this.tid= threading.Thread( target=this._halt_thread, )
+            this.tid.daemon = True
+            this.tid.start()
+            this.log.debug("Started Halt Thread")
+            
+            #our standard MBUS interfaces
+            this.mbus = this.HaltMBusInterface( this, _ice, prc_addr, \
+                                    log_level=log_level)
+            this.mem = Memory(this.mbus, writeback=False, \
+                                    log_level=log_level)
+            this.rf = this.HaltRegFile(this,this.mbus,None,writeback=False, \
+                                    log_level=log_level)
+            this.log.debug("Created MBus/RF/Mem interfaces")
+        
+        def getMem(this): return this.mem
+        def getRF(this): return this.rf
+       
+        def halt(this, halt_cb):
+            '''
+            non-blocking request to halt
+            will call halt_cb("S05") when halt is complete
+             possibly overwriting any existing halt_cb
+            '''
+            with this.lock:
+                this.log.debug("Halting the PRC")
+                assert(this.flag_addr == None)
+                if (this.halt_cb):
+                    this.log.debug("Overwriting existing halt_cb")
+                this.halt_cb = halt_cb
+                this.mbus.write_reg( 0x7, 0x1) # write something to MBUS_R7
+                this.flag_addr = None
+        
+        def resume(this, halt_cb=None):
+            '''
+            resume the halted PRC
+            will call halt_cb("S05") when halted if argument is given
+            '''
+            with this.lock:
+                assert(this.flag_addr != None)
+                assert(this.halt_cb == None)
+                this.halt_cb = halt_cb
+                this.log.debug("Resuming the PRC")
+                this.log.debug("clearing flag @" + hex(this.flag_addr))
+                this.mbus.write_mem(this.flag_addr, 0x01, 32)
+                this.flag_addr = None
+        
+        def isHalted(this):
+            return (this.flag_addr != None)
+
+        def _halt_thread(this):
+
+            while not this.stop.isSet():
+                try:  
+                    mbus_addr, mbus_data = this.queue.get( True, 10)
+                    this.log.debug("HALT triggered")
+
+                    # read the gdb_flag and register pointer
+                    [mbus_addr] = struct.unpack(">I", mbus_addr)
+                    assert( mbus_addr == 0xe0)
+                    [flag_addr ] = struct.unpack(">I", mbus_data)
+                    this.log.debug("flag triggered")
+                    this.log.debug("flag at: " + hex(flag_addr))
+                except queue.Empty: continue
+
+                try:
+                    mbus_addr, mbus_data = this.queue.get()
+                    [mbus_addr] = struct.unpack(">I", mbus_addr)
+                    assert( mbus_addr == 0xe0)
+                    [reg_addr ] = struct.unpack(">I", mbus_data)
+                    this.log.debug("updating regFile at: " + hex(reg_addr))
+                except Exception as e:
+                    print (e)
+                    raise
+                
+
+                with this.lock: 
+                    this.rf.update_base_addr(reg_addr)
+                    this.flag_addr = flag_addr
+                    this.log.debug("Responding via GDB with SIGTRAP")
+                    try:
+                        this.halt_cb("S05")
+                    except TypeError:
+                        this.log.debug("skipping halt callback, not registered?")
+                    this.halt_cb = None
+
+
+    def __init__(this, ice, frontend, prc_addr, log_level = logging.WARN):
+
+        # setup our log
+        this.log = m3_logging.getLogger( type(this).__name__)
+        this.log.setLevel(log_level)
+       
+        this.fe = frontend # the gdb frontend
+        
+        this.prc= this.PrcCtrl( ice, prc_addr, log_level)
+        this.mem = this.prc.getMem()
+        this.rf = this.prc.getRF()
+
+        this.svc_01 = 0xdf01 # asm("SVC #01")
+        # were displaced instructions live
+        # these have the form { (addr,size) : inst }
+        this.displaced_insts = {} 
+
+        try:
+            from PyMulator.PyMulator import PyMulator
+            this.mulator = PyMulator(this.rf, this.mem,debug=True)
+        except:  
+            this.log.warn('='*40 + '\n' + \
+                         '\tPyMulator not found\n' +\
+                         '\tSingle-stepping will not work!\n' + \
+                         '='*40)
+
+        this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 
+                        'r7', 'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 
+                        'lr', 'pc', 
+                        'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7',                                 'fps', 
+                        'xpsr', ]
+        this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 
+                        'r5':0, 'r6':0, 'r7':0, 'r8':0, 'r9':0, 
+                        'r10':0, 'r11':0, 'r12':0, 'sp':0, 'lr':0, 
+                        'pc':0, 
+                        'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 
+                        'f5':8, 'f6':8, 'f7':8, 'fps':0, 
+                        'xpsr':0, }
+
+
+        this.encode_str = { 4:'<I', 2:'<H', 1:'<B' }
+   
+        
+    def cmd__question_(this,):
+        this.log.info("? Cmd")
+        if this.prc.isHalted():
+            return 'S05'
+        else:
+            this.cmd__ctrlc_()
+
+    def cmd__ctrlc_(this,):
+        this.log.info("CTRL+C (HALT)")
+        this.prc.halt( this.fe.put )
+
+    def cmd_M(this, subcmd):
+        preamble, data = subcmd.split(':')
+        addr,size_bytes= preamble.split(',')
+        addr,size_bytes = map(lambda x: int(x, 16), [addr, size_bytes])
+        this.log.info('mem write: ' + hex(addr) + ' of ' + str(size_bytes))
+        data = binascii.unhexlify(data) 
+        
+        while size_bytes > 0:
+            b = struct.unpack("B", data[0])[0]
+            this.log.debug('Writing ' + hex(b) + ' to ' \
+                + hex(addr))
+
+            #this is not the most efficient, but it works...
+            this.mem.forceWrite((addr,8), b)
+
+            size_bytes -= 1
+            addr += 1
+            data = data[1:]
+        return 'OK'
+
+    def cmd_P(this, subcmd):
+        assert(this.prc.isHalted()) 
+        reg,val = subcmd.split('=')
+        reg = int(reg, 16)
+        reg = this.regs[ reg]
+        # fix endiananess, conver to int
+        val = int(binascii.hexlify( binascii.unhexlify(val)[::-1]),16)
+        this.log.warn('register write :' + str(reg) + ' = ' + hex(val) )
+        this.rf.forceWrite(reg,val)
+        return "OK"
+
+    def cmd_X(this, subcmd):
+        this.log.info("Binary Memory Write not supported.")
+        return ""
+
+    def cmd_Z(this, subcmd):
+        this.log.info("Breakpoint Set")
+        args = subcmd.split(',')
+        brType, addr, size = map(lambda x: int(x,16), args)
+        assert(brType == 0)
+        assert(size == 2)
+        this.log.info("Replacing instruction @" + \
+                        hex(addr) + " with trap" )
+        size *= 8 # convert to bits
+        if (addr,size) in this.displaced_insts: 
+            this.log.info( hex(addr) + '('+str(size)+')' + \
+                'already a soft-breakpoint')
+        else:
+            this.displaced_insts[(addr,size)] = \
+                    this.mem[(addr,size)]
+            this.mem.forceWrite( (addr,16), this.svc_01)
+        return 'OK'
+
+
+    def cmd_c(this):
+        assert(this.prc.isHalted()) 
+        this.log.info("continue")
+        this.prc.resume( this.fe.put )
+
+    def cmd_g(this, ):
+        assert(this.prc.isHalted()) 
+        this.log.info('read all regs')
+
+        resp = ''
+        for ix in range(0, len(this.regs)):
+            val = this.cmd_p( this.regs[ix] )
+            resp += val
+        return resp
+
+    def cmd_k(this):
+        this.log.info("kill")
+        if this.prc.isHalted(): 
+            this.log.warn('Caught Kill Command, resuming')
+            this.prc.resume() 
+        else:
+            this.log.warn('Caught Kill Command, doing nothing')
+
+    def cmd_m(this, subcmd):
+        assert(this.prc.isHalted()) 
+        args = subcmd.split(',')
+        addr,size_bytes = map(lambda x: int(x, 16), args)
+
+        this.log.info('mem read: ' + hex(addr) + ' of ' + \
+                            str(size_bytes))
+
+        resp = '' 
+        while size_bytes > 0:
+            read_bytes = 4 if size_bytes >4 else size_bytes
+            encode_str = this.encode_str[read_bytes]
+            val = this.mem[(addr,read_bytes * 8)]
+            val = struct.pack(encode_str, val).encode('hex')#lit endian
+            resp += val
+            addr += read_bytes
+            size_bytes -= read_bytes
+        return resp
+
+                
+    def cmd_p(this, subcmd):
+        assert(this.prc.isHalted()) 
+        reg = subcmd
+        this.log.info('reg read: ' + str(reg))
+        encode = this.encode_str[4]
+
+        val = this.rf[reg]
+        if reg == 'pc': val -= 4
+        val = struct.pack(encode ,val).encode('hex') #lit endian 
+        val = '00' * this.regsPads[reg] + val # add some front-padding
+        return val
+
+    def cmd_q(this, subcmd):
+        this.log.info('Query')
+        if subcmd.startswith('C'):
+            # asking about current thread, 
+            # again, what threads...
+            return ""
+        elif subcmd.startswith('fThreadInfo'):
+            # info on threads? what threads?
+            return ""
+        elif subcmd.startswith('L'):
+            # legacy form of fThreadInfo
+            return ""
+        elif subcmd.startswith('Attached'):
+            # did we attach to a process, or spawn a new one
+            # processes?
+            return ""
+        elif subcmd.startswith('Offsets'):
+            # did we translate the sections vith virtual memory?
+            # virtual memory?
+            return ""
+        elif subcmd.startswith('Supported'):
+            # startup command
+            this.log.debug('qSupported')
+            return "PacketSize=4096"
+        elif subcmd.startswith('Symbol'):
+            # gdb is offering us the symbol table
+            return "OK"
+        elif subcmd.startswith('TStatus'):
+            #this has to do with tracing, we're not handling that yet
+            return ""
+        else: raise this.UnsupportedException( subcmd)
+       
+    def cmd_s(this, ):
+        assert(this.prc.isHalted()) 
+        this.log.info('single-step ')
+
+        # might have to temporarially replace a trap
+        displaced_trap = False
+        pc = this.rf['pc'] - 4
+        
+        if (pc,16) in this.displaced_insts:
+            this.log.debug("Trap @ " + hex(pc) + \
+                    ", but we need the inst, fixing...")
+            this.cmd_z('0,' + hex(pc)[2:] + ',2')
+            displaced_trap = True
+
+        # if the prc is halted, the reg file is valid 
+        if True:
+            this.log.debug("Soft-Stepping with Mulator")
+            this.mulator.stepi()
+            break_addr = this.rf.getLocal('pc') - 4
+            this.log.debug("Next PC: " + hex(break_addr) )
+       
+        # insert soft-trap at next instruction
+        this.cmd_Z('0,' + hex(break_addr)[2:] + ',2')
+        
+        #step to the soft-trap
+        this.prc.resume()
+        while not this.prc.isHalted():
+            time.sleep(0.1)
+        
+        #fix the next instruction
+        this.cmd_z('0,' + hex(break_addr)[2:] + ',2')
+        #and the orig inst
+        if displaced_trap:
+            this.cmd_Z('0,' + hex(pc)[2:] + ',2')
+
+        return 'S05'
+
+    def cmd_v(this, subcmd):
+        this.log.info('v command')
+        assert(this.prc.isHalted() )
+        if subcmd.startswith('Cont?'):
+            this.log.debug('vCont')
+            return "vCont;cs"
+        else: assert(False) 
+
+    def cmd_z(this, subcmd):
+        this.log.info("Breakpoint Clear")
+        args = subcmd.split(',')
+        brType, addr, size = map(lambda x: int(x,16), args)
+        assert(brType == 0)
+        assert(size == 2)
+        this.log.info("Replacing trap with origional instruction @" +\
+                        hex(addr) )
+        size *= 8 # convert to bites                                
+        if (addr,size) not in this.displaced_insts:
+            this.log.info( hex(addr) + '('+str(size)+')' + \
+                'not a soft-breakpoint')
+        else:
+            orig_inst = this.displaced_insts[(addr,size)]
+            this.mem.forceWrite( (addr,size), orig_inst)
+            del this.displaced_insts[(addr,size)]
+        return 'OK'
+
+
+
+
+
    
 #
 #
 #
-class testing_gdb_ctrl(object):
+class test_GdbCtrl(GdbCtrl):
     
     def __init__(this):
 
@@ -274,13 +685,13 @@ class testing_gdb_ctrl(object):
         this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 
                         'r9', 'r10', 'r11', 'r12', 'sp', 'lr', 'pc', 
                         'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'fps', 
-                        'cpsr', ]
+                        'xpsr', ]
         this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 'r5':0, 
                         'r6':0, 'r7':0, 'r8':0, 'r9':0, 'r10':0, 'r11':0, 
                         'r12':0, 'sp':0, 'lr':0, 'pc':0, 
                         'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 'f5':8, 'f6':8, 
                         'f7':8, 'fps':0, 
-                        'cpsr':0, }
+                        'xpsr':0, }
 
     def cmd__question_(this,):
         this.log.info("? Cmd")
@@ -288,6 +699,8 @@ class testing_gdb_ctrl(object):
 
     def cmd__ctrlc_(this,):
         this.log.info("CTRL+C (HALT)")
+        #hack for now...
+        return this.cmd__question_()
 
     def cmd_M(this, subcmd):
         preamble, data = subcmd.split(':')
@@ -416,7 +829,7 @@ if __name__ == '__main__':
                port = int(arg.split("=")[1])
                print ('set port=' + str(port))
 
-    ctrl = testing_gdb_ctrl()
+    ctrl = test_GdbCtrl()
     gdb = GdbRemote( tcp_port=port, log_level = logging.DEBUG)
     gdb.run()
 

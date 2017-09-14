@@ -71,7 +71,7 @@ class MBusInterface(object):
             raise MBusInterfaceException("Only short prefixes supported")
         else: raise MBusInterfaceException("Bad MBUS Addr")
 
-        this.log = m3_logging.get_logger( type(this).__name__)
+        this.log = m3_logging.getLogger( type(this).__name__)
         this.log.setLevel(log_level)
 
         this.log.info("MBUS Re-configuring ICE MBus to listen for "+\
@@ -124,7 +124,7 @@ class MBusInterface(object):
                 assert( mem_addr == 0x00000000)
                 break
             else: 
-                this.log.debug('Found non-debug MBUS message:' + \
+                this.log.debug('Found non-e1 MBUS message:' + \
                         hex(mbus_addr) + ' ' + str(repr(mbus_data)))
                 continue # try again
 
@@ -228,7 +228,7 @@ class Memory(object):
         this.writeback = writeback
         this.local = {}
 
-        this.log = m3_logging.get_logger( type(this).__name__)
+        this.log = m3_logging.getLogger( type(this).__name__)
         this.log.setLevel(log_level)
 
     #
@@ -295,7 +295,7 @@ class RegFile(Memory):
         super( RegFile, this).__init__(mbus)
         this.base_addr = base_addr 
 
-        this.log = m3_logging.get_logger( type(this).__name__)
+        this.log = m3_logging.getLogger( type(this).__name__)
         this.log.setLevel(log_level)
         
         # specific ordering matching on-board gdb code
@@ -336,6 +336,7 @@ class RegFile(Memory):
             key = this.trans_names[key]
 
         assert( key in this.names)
+        assert(this.base_addr != None)
         mem_addr = this.base_addr + this.offsets[key]
         val = this.mbus.read_mem(mem_addr,32)
         # ARM pc reads return pc + 4 (it's wierd)
@@ -367,6 +368,7 @@ class RegFile(Memory):
         assert( isinstance(val, int))
 
         if (this.writeback):
+            assert(this.base_addr != None)
             mem_addr = this.base_addr + this.offsets[key]
             this.mbus.write_mem(mem_addr,val,32)
         else: 
@@ -444,7 +446,6 @@ class mbus_controller( object):
                 default='gdb'
                 )
 
-
         self.parser_gdb.set_defaults(func=self.cmd_gdb)
 
 
@@ -463,6 +464,8 @@ class mbus_controller( object):
         logger.info("** Disabling ICE MBus snoop mode")
         self.m3_ice.ice.mbus_set_snoop(False)
 
+        logger.info("")
+
         #logger.info("Triggering MBUS internal reset")
         #self.m3_ice.ice.mbus_set_internal_reset(True)
         #self.m3_ice.ice.mbus_set_internal_reset(False)
@@ -479,7 +482,7 @@ class mbus_controller( object):
             #mbus_addr = struct.pack(">I", mbus_long_addr)
         else: raise Exception("Bad MBUS Addr")
 
-        logger.info('MBus_PRC_Addr: ' + binascii.hexlify(mbus_addr))
+        logger.debug('MBus_PRC_Addr: ' + binascii.hexlify(mbus_addr))
 
         # 0x0 = mbus register write
         mbus_regwr = struct.pack(">I", ( prc_addr << 4) | 0x0 ) 
@@ -497,11 +500,11 @@ class mbus_controller( object):
             #mem_addr = struct.pack(">I", RUN_CPU) 
         # instead use the RUN_CPU MBUS register
         data= struct.pack(">I", 0x10000000) 
-        logger.debug("raising RESET signal... ")
+        logger.info("raising RESET signal... ")
         self.m3_ice.ice.mbus_send(mbus_regwr, data)
 
         # load the program
-        logger.debug ( 'loading binfile: '  + self.m3_ice.args.BINFILE) 
+        logger.info( 'writing binfile: '  + self.m3_ice.args.BINFILE) 
         datafile = self.m3_ice.read_binfile_static(self.m3_ice.args.BINFILE)
         # convert to hex
         datafile = binascii.unhexlify(datafile)
@@ -539,7 +542,7 @@ class mbus_controller( object):
 
         # see above, just using RUN_CPU MBUS register again
         clear_data= struct.pack(">I", 0x10000001)  # 1 clears reset
-        logger.debug("clearing RESET signal... ")
+        logger.info("clearing RESET signal... ")
         self.m3_ice.ice.mbus_send(mbus_regwr, clear_data)
  
         logger.info("")
@@ -561,308 +564,10 @@ class mbus_controller( object):
     #
     def cmd_gdb(self):
       
-        class GdbCtrl(object):
-            '''
-            The backend controller that impliments the GDB commands
-            '''
-
-            class PrcMBusInterface(MBusInterface):
-                # this will get used later
-                def _callback(this,*args, **kwargs):
-                    this.callback_queue.put((time.time(), args, kwargs))
-
-            def __init__(this, ice, prc_addr, log_level = logging.WARN):
-
-                # setup our log
-                this.log = m3_logging.get_logger( type(this).__name__)
-                this.log.setLevel(log_level)
-
-                this.mbus = this.PrcMBusInterface( ice, prc_addr, log_level)
-                this.mem = Memory(this.mbus, writeback=False, \
-                                        log_level=log_level)
-                this.rf = RegFile(this.mbus,None,writeback=False, \
-                                        log_level=log_level)
-
-                this.flag_addr = None
-
-                this.svc_01 = 0xdf01 # asm("SVC #01")
-                # were displaced instructions live
-                # these have the form { (addr,size) : inst }
-                this.displaced_insts = {} 
-
-                try:
-                    from PyMulator.PyMulator import PyMulator
-                    this.mulator = PyMulator(this.rf, this.mem,debug=True)
-                except:  
-                    this.log.warn('='*40 + '\n' + \
-                                 '\tPyMulator not found\n' +\
-                                 '\tSingle-stepping will not work!\n' + \
-                                 '='*40)
-
-                this.regs = [   'r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 
-                                'r7', 'r8', 'r9', 'r10', 'r11', 'r12', 'sp', 
-                                'lr', 'pc', 
-                                'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7',                                 'fps', 
-                                'xpsr', ]
-                this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 
-                                'r5':0, 'r6':0, 'r7':0, 'r8':0, 'r9':0, 
-                                'r10':0, 'r11':0, 'r12':0, 'sp':0, 'lr':0, 
-                                'pc':0, 
-                                'f0':8, 'f1':8, 'f2':8, 'f3':8, 'f4':8, 
-                                'f5':8, 'f6':8, 'f7':8, 'fps':0, 
-                                'xpsr':0, }
-
-
-                this.encode_str = { 4:'<I', 2:'<H', 1:'<B' }
-
-            def cmd__question_(this,):
-                this.log.info("? Cmd")
-                assert(this.flag_addr != None)
-                return 'S05'
-
-            def cmd__ctrlc_(this,):
-                this.log.info("CTRL+C (HALT)")
-
-                if this.flag_addr != None:
-                    raise Exception("PRC already halted")
-
-                this.mbus.write_reg( 0x7, 0x1) # write something to MBUS_R7
-
-                this.log.debug("waiting for HALT to trigger... ")
-                this._wait_for_flag()
-
-            def cmd_M(this, subcmd):
-                preamble, data = subcmd.split(':')
-                addr,size_bytes= preamble.split(',')
-                addr,size_bytes = map(lambda x: int(x, 16), [addr, size_bytes])
-                this.log.info('mem write: ' + hex(addr) + ' of ' + str(size_bytes))
-                data = binascii.unhexlify(data) 
-                
-                while size_bytes > 0:
-                    b = struct.unpack("B", data[0])[0]
-                    this.log.debug('Writing ' + hex(b) + ' to ' \
-                        + hex(addr))
-
-                    #this is not the most efficient, but it works...
-                    this.mem.forceWrite((addr,8), b)
-
-                    size_bytes -= 1
-                    addr += 1
-                    data = data[1:]
-                return 'OK'
-
-            def cmd_P(this, subcmd):
-                reg,val = subcmd.split('=')
-                reg = int(reg, 16)
-                reg = this.regs[ reg]
-                # fix endiananess, conver to int
-                val = int(binascii.hexlify( binascii.unhexlify(val)[::-1]),16)
-                this.log.warn('register write :' + str(reg) + ' = ' + hex(val) )
-                this.rf.forceWrite(reg,val)
-                return "OK"
-
-            def cmd_X(this, subcmd):
-                this.log.info("Binary Memory Write not supported.")
-                return ""
-
-            def cmd_Z(this, subcmd):
-                this.log.info("Breakpoint Set")
-                args = subcmd.split(',')
-                brType, addr, size = map(lambda x: int(x,16), args)
-                assert(brType == 0)
-                assert(size == 2)
-                this.log.info("Replacing instruction @" + \
-                                hex(addr) + " with trap" )
-                size *= 8 # convert to bits
-                if (addr,size) in this.displaced_insts: 
-                    this.log.info( hex(addr) + '('+str(size)+')' + \
-                        'already a soft-breakpoint')
-                else:
-                    this.displaced_insts[(addr,size)] = \
-                            this.mbus.read_mem( addr, size)
-                    this.mbus.write_mem( addr, this.svc_01, 16)
-                return 'OK'
-
-
-            def cmd_c(this):
-                this.log.info("continue")
-                assert(this.flag_addr != None)
-                
-                this._clear_flag()
-                this.log.debug("waiting for something to trigger... ")
-                this._wait_for_flag()
-                return "S05"
-
-
-            def cmd_g(this, ):
-                this.log.info('read all regs')
-                assert(this.flag_addr != None)
-
-                resp = ''
-                for ix in range(0, len(this.regs)):
-                    val = this.cmd_p( this.regs[ix] )
-                    resp += val
-                return resp
-
-            def cmd_k(this):
-                this.log.info("kill")
-                this.log.warn('Caught Kill Command, doing nothing')
-
-            def cmd_m(this, subcmd):
-                args = subcmd.split(',')
-                addr,size_bytes = map(lambda x: int(x, 16), args)
-
-                this.log.info('mem read: ' + hex(addr) + ' of ' + \
-                                    str(size_bytes))
-                assert(this.flag_addr != None)
-
-                resp = '' 
-                while size_bytes > 0:
-                    read_bytes = 4 if size_bytes >4 else size_bytes
-                    encode_str = this.encode_str[read_bytes]
-                    val = this.mem[(addr,read_bytes * 8)]
-                    val = struct.pack(encode_str, val).encode('hex')#lit endian
-                    resp += val
-                    addr += read_bytes
-                    size_bytes -= read_bytes
-                return resp
-
-                        
-            def cmd_p(this, subcmd):
-                reg = subcmd
-                this.log.info('reg read: ' + str(reg))
-                assert(this.flag_addr != None)
-                encode = this.encode_str[4]
-
-                val = this.rf[reg]
-                if reg == 'pc': val -= 4
-                val = struct.pack(encode ,val).encode('hex') #lit endian 
-                val = '00' * this.regsPads[reg] + val # add some front-padding
-                return val
-
-            def cmd_q(this, subcmd):
-                this.log.info('Query')
-                if subcmd.startswith('C'):
-                    # asking about current thread, 
-                    # again, what threads...
-                    return ""
-                elif subcmd.startswith('fThreadInfo'):
-                    # info on threads? what threads?
-                    return ""
-                elif subcmd.startswith('L'):
-                    # legacy form of fThreadInfo
-                    return ""
-                elif subcmd.startswith('Attached'):
-                    # did we attach to a process, or spawn a new one
-                    # processes?
-                    return ""
-                elif subcmd.startswith('Offsets'):
-                    # did we translate the sections vith virtual memory?
-                    # virtual memory?
-                    return ""
-                elif subcmd.startswith('Supported'):
-                    # startup command
-                    this.log.debug('qSupported')
-                    return "PacketSize=4096"
-                elif subcmd.startswith('Symbol'):
-                    # gdb is offering us the symbol table
-                    return "OK"
-                elif subcmd.startswith('TStatus'):
-                    #this has to do with tracing, we're not handling that yet
-                    return ""
-                else: raise this.UnsupportedException( subcmd)
-               
-            def cmd_s(this, ):
-                this.log.info('single-step ')
-                assert(this.flag_addr != None)
-
-                # might have to temporarially replace a trap
-                displaced_trap = False
-                pc = this.rf['pc'] - 4
-                
-                if (pc,16) in this.displaced_insts:
-                    this.log.debug("Trap @ " + hex(pc) + \
-                            ", but we need the inst, fixing...")
-                    this.cmd_z('0,' + hex(pc)[2:] + ',2')
-                    displaced_trap = True
-
-                # if flag_addr is set, the reg file is valid 
-                if True:
-                    this.log.debug("Soft-Stepping with Mulator")
-                    this.mulator.stepi()
-                    break_addr = this.rf.getLocal('pc') - 4
-                    this.log.debug("Next PC: " + hex(break_addr) )
-               
-                # insert soft-trap at next instruction
-                this.cmd_Z('0,' + hex(break_addr)[2:] + ',2')
-                
-                #step to the soft-trap
-                this.log.debug("Waiting for trigger")
-                this._clear_flag() 
-                this._wait_for_flag()
-                
-                #fix the next instruction
-                this.cmd_z('0,' + hex(break_addr)[2:] + ',2')
-                #and the orig inst
-                if displaced_trap:
-                    this.cmd_Z('0,' + hex(pc)[2:] + ',2')
-
-                return 'S05'
-
-            def cmd_v(this, subcmd):
-                this.log.info('v command')
-                assert(this.flag_addr != None)
-                if subcmd.startswith('Cont?'):
-                    this.log.debug('vCont')
-                    return "vCont;cs"
-                else: assert(False) 
-
-            def cmd_z(this, subcmd):
-                this.log.info("Breakpoint Clear")
-                args = subcmd.split(',')
-                brType, addr, size = map(lambda x: int(x,16), args)
-                assert(brType == 0)
-                assert(size == 2)
-                this.log.info("Replacing trap with origional instruction @" +\
-                                hex(addr) )
-                size *= 8 # convert to bites                                
-                if (addr,size) not in this.displaced_insts:
-                    this.log.info( hex(addr) + '('+str(size)+')' + \
-                        'not a soft-breakpoint')
-                else:
-                    orig_inst = this.displaced_insts[(addr,size)]
-                    this.mbus.write_mem( addr, orig_inst, size)
-                    del this.displaced_insts[(addr,size)]
-                return 'OK'
-
-            def _clear_flag(this,):
-                this.log.debug("clearing flag @" + hex(this.flag_addr))
-                this.mbus.write_mem(this.flag_addr, 0x01, 32)
-                this.flag_addr = None
- 
-            def _wait_for_flag(this,timeout=None):
-                assert( this.flag_addr == None)
-
-                # read the gdb_flag and register pointer
-                mbus_addr, mbus_data = this.mbus.read()
-                [mbus_addr] = struct.unpack(">I", mbus_addr)
-                assert( mbus_addr == 0xe0)
-                [flag_addr ] = struct.unpack(">I", mbus_data)
-                this.log.debug("flag triggered")
-                this.log.debug("flag at: " + hex(flag_addr))
-                this.flag_addr = flag_addr
-
-                mbus_addr, mbus_data = this.mbus.read()
-                [mbus_addr] = struct.unpack(">I", mbus_addr)
-                assert( mbus_addr == 0xe0)
-                [reg_addr ] = struct.unpack(">I", mbus_data)
-                this.log.debug("updating regFile at: " + hex(reg_addr))
-                this.rf.update_base_addr(reg_addr)
- 
         class InputManager(object):
             '''
-            Alternate frontend that skips GDB and 
-            processes commands straight form stdin
+            Alternate frontend that skips GDBserv and 
+            processes commands straight from stdin
             '''
             def run(this): pass
             def get(this):
@@ -890,30 +595,21 @@ class mbus_controller( object):
         port =  int(self.m3_ice.args.port)
         input_mode = self.m3_ice.args.input_mode.lower()
 
+        from . import m3_gdb
+
         if input_mode == 'gdb':
             # gdb interface
-            from . import m3_gdb
             interface= m3_gdb.GdbRemote(tcp_port = port , log_level = dbgLvl )
         elif input_mode == 'direct':
             interface = InputManager()
         else: raise Exception('Unsupported input_mode' + \
                         str(self.m3_ice.args.input_mode) )
 
-        #try: # create and start our gdb thread
-        #except m3_gdb.GdbRemote.PortTakenException:
-        #    logger.warn("Using Alternative Port: " + str(10002))
-        #    interface= m3_gdb.GdbRemote(tcp_port = 10002, 
-        #                log_level = log_level)
+        # create GDB controller backend 
+        ctrl = m3_gdb.GdbCtrl( self.m3_ice.ice, interface, prc_addr, \
+                            log_level = dbgLvl)
 
-        # create MBus Interface
-        ctrl = GdbCtrl( self.m3_ice.ice, prc_addr, log_level = dbgLvl)
-
-        # @todo
-        # this will need a more advanced threading model at some point
-        # to process a CTRL+C  while waiting on continue
-        # currently, we interpret CTRL+C as terminate
-
-        logger.debug ("GDB main loop")
+        logger.debug ("GDB CTRL main loop")
         interface.run()                                        
         while (True):
             cmd, args, kwargs = interface.get()
