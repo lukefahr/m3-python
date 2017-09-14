@@ -110,7 +110,12 @@ def get_logger(name):
 #maintain API compatability with the 
 # logger module
 def getLogger(name):
-    return get_logger(name)
+    l = logging.getLogger(name)
+    h = logging.StreamHandler()
+    f = DefaultFormatter(fmt="%(levelname)s\t%(name)s %(message)s")
+    h.setFormatter(f)
+    l.addHandler(h)
+    return l
 
 #def log_level_from_environment():
 #	try:
@@ -118,8 +123,6 @@ def getLogger(name):
 #		return logging.DEBUG
 #	except KeyError:
 #		return logging.INFO
-
-logger = get_logger(__name__)
 
 def LoggerSetLevel(lvl):
     if lvl.lower() in ['debug']:
