@@ -18,7 +18,7 @@ import subprocess
 import inspect
 
 from m3.m3_gdb import GdbRemote
-from m3.m3_gdb import testing_gdb_ctrl
+from m3.m3_gdb import test_GdbCtrl
 
 class TestGdbSimple(object):
 
@@ -81,18 +81,18 @@ class TestGdbSimple(object):
         s.close()
         
         rx_cmd, rx_subcmd, _ = this.gdb.get()
-        assert(rx_cmd == 'CTRL_QUIT')
+        assert(rx_cmd == '_quit_')
 
     def test_gdb_simple(this):
         
         this.log.info("Testing GDB Dummy Backend")
 
         def ctrl(gdb):
-            ctrl = testing_gdb_ctrl()
+            ctrl = test_GdbCtrl()
             while True:
                 cmd,args,kwargs = gdb.get()
                 cmd = 'cmd_' + cmd
-                if cmd == 'cmd_CTRL_QUIT':
+                if cmd == 'cmd__quit_':
                     this.log.info('GDB CTRL Quitting')
                     return
                 func = getattr(ctrl, cmd)
