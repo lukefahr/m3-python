@@ -588,9 +588,6 @@ class mbus_controller( object):
         #determin current logging level
         dbgLvl = m3_logging.logger.getEffectiveLevel()
 
-        print ("Manually setting debug for this module")
-        dbgLvl = logging.DEBUG 
-
         #parse command line args
         port =  int(self.m3_ice.args.port)
         input_mode = self.m3_ice.args.input_mode.lower()
