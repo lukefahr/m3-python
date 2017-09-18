@@ -44,7 +44,7 @@ from . import __version__
 
 
 from . import m3_logging
-logger = m3_logging.getGlobalLogger()
+logger = m3_logging.getLogger(__name__)
 
  
 
@@ -586,7 +586,7 @@ class mbus_controller( object):
         prc_addr = int(self.m3_ice.args.short_prefix, 16)
    
         #determin current logging level
-        dbgLvl = m3_logging.logger.getEffectiveLevel()
+        dbgLvl = logger.getEffectiveLevel()
 
         #parse command line args
         port =  int(self.m3_ice.args.port)

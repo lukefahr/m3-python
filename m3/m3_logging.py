@@ -85,37 +85,53 @@ def trace(fn):
 
 no_trace_filter = NoTraceFilter()
 
-def get_logger(name):
-	l = logging.getLogger(name)
-	l.level = logging.DEBUG
-	try:
-		l.addHandler(get_logger.handler)
-	except AttributeError:
-		h = logging.StreamHandler()
-		h.level = logging.DEBUG
-		h.addFilter(NoTraceFilter())
-		get_logger.handler = h
-		l.addHandler(get_logger.handler)
-	try:
-		get_logger.handler.setFormatter(get_logger.formatter)
-	except AttributeError:
-		f = DefaultFormatter()
-		get_logger.formatter = f
-		get_logger.handler.setFormatter(get_logger.formatter)
+class LoggerManager (object):
+    
+    def __init__(this):
 
-	l.trace = lambda msg, l=l: l.log(TRACE_LEVEL, msg)
+        this.level = logging.DEBUG 
 
-	return l
+        this.f = DefaultFormatter()
 
-#maintain API compatability with the 
-# logger module
-def getLogger(name):
-    l = logging.getLogger(name)
-    h = logging.StreamHandler()
-    f = DefaultFormatter(fmt="%(levelname)s\t%(name)s %(message)s")
-    h.setFormatter(f)
-    l.addHandler(h)
-    return l
+        this.h = logging.StreamHandler()
+        this.h.setFormatter(this.f)
+        this.h.level = logging.INFO
+        this.h.addFilter(NoTraceFilter())
+
+        this.debugFormat = "%(levelname)s\t%(name)s\t%(message)s"
+
+    def getLogger(this, name):
+        l = logging.getLogger(name)
+
+        l.level = this.level
+        l.addHandler(this.h)
+        l.trace = lambda msg, l=l: l.log(TRACE_LEVEL, msg)
+
+        return l
+
+    def updateLevel(this, log_level):
+       
+        if isinstance(log_level, int): 
+            this.h.level = log_level
+            if log_level == logging.DEBUG:
+                this.updateFormat(this.debugFormat)
+            else: this.updateFormat()
+
+        else: # if called with strings, recurse with the level
+            if log_level.lower() in ['debug']:
+                this.updateLevel(logging.DEBUG)
+            elif log_level.lower() in ['info']:
+                this.updateLevel(logging.INFO)
+            elif log_level.lower() in ['warn']:
+                this.updateLevel(logging.WARN)
+            else: raise Exception("Bad Level")
+
+    def updateFormat(this, fmt=None):
+        if fmt!= None:
+            this.f = DefaultFormatter(fmt=fmt)
+        else:
+            this.f = DefaultFormatter()
+        this.h.setFormatter(this.f)
 
 #def log_level_from_environment():
 #	try:
@@ -124,14 +140,22 @@ def getLogger(name):
 #	except KeyError:
 #		return logging.INFO
 
-def LoggerSetLevel(lvl):
-    if lvl.lower() in ['debug']:
-       logger.setLevel ( logging.DEBUG)
-    elif lvl.lower() in ['info']:
-       logger.setLevel ( logging.INFO)
-    else: raise Exception('unsupported level')
+# global list of loggers
+logMan = LoggerManager() 
 
-logger = get_logger(__name__)
+glob_logger = logMan.getLogger(__name__)
 
 def getGlobalLogger():
-    return logger
+    return glob_logger
+
+def LoggerSetLevel(lvl):
+    logMan.updateLevel(lvl)
+
+def get_logger(name):
+    return logMan.getLogger(name)
+
+#maintain API compatability with the logger module
+def getLogger(name):
+    return logMan.getLogger(name)
+
+
