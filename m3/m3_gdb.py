@@ -35,6 +35,14 @@ try: from . import m3_logging
 except ValueError: import logging as m3_logging
 
 class GdbRemote(object):
+    '''
+    This class handles the interface with the GDB client, and puts
+    decoded messages in an output queue accessable through get()
+
+    It also handles formatting responses to the client through the put() command
+
+    It spawns a TX and RX thread internally
+    '''
 
     class UnsupportedException(Exception): pass
     class PortTakenException(Exception): pass
@@ -64,37 +72,38 @@ class GdbRemote(object):
         # inter-thread queues
         this.respQ = queue.Queue()
         this.reqQ = queue.Queue()
-
+    
     def get(this,):
+        '''
+        Get the next incomming gdb client message 
+        Blocking
+        '''
         while True:
             try: return this.reqQ.get(True, 10)
             except queue.Empty: pass
 
     def put(this,msg):
+        '''
+        Put something on the outgoing (response) stream
+        '''
         this.respQ.put(msg)
 
-    def _gdbPut(this, cmd, *args, **kwargs):
-        this.reqQ.put( (cmd, args, kwargs) )
-    
-    def _gdbGet(this, timeout=None):
-        ztime = 10 if timeout == None else timeout
-        while True:
-            try: return this.respQ.get(True, ztime)
-            except queue.Empty: 
-                if timeout == None: continue
-                else: return None
-    
     def run(this,): 
+        '''
+        Starts the GDB server frontend
+        (non-blocking call)
+        '''
         this.RxTid = threading.Thread( target=this._gdb_rx, )
         this.RxTid.daemon = True
         this.RxTid.start()
         this.log.debug("Started GDB Thread")
         
-    #
-    # Internal Thread's main loop
-    #
     def _gdb_rx(this):
-
+        ''' 
+        Gdb client connection thread
+        This thread handles accepting connections and incomming (receive) data
+        It spawns a seperate thread for transmitting data
+        '''
         this.sock.listen(1) #not sure why 1
         
         while True:
@@ -131,10 +140,11 @@ class GdbRemote(object):
             conn.close()
             TxTid.join()
 
-    #
-    #
-    #
     def _gdb_tx(this, conn):
+        ''' 
+        Gdb Server Transmit thread
+        runs until it pulls a 'GDB_QUIT' message from the incomming queue
+        '''
         while True:
             msg = this._gdbGet()
             if msg == 'GDB_QUIT': 
@@ -145,11 +155,30 @@ class GdbRemote(object):
             else:
                 this._gdb_resp(conn, msg) 
 
-    #
-    #
-    #
+    def _gdbPut(this, cmd, *args, **kwargs):
+        '''
+        place a message on the to-be-processed queue
+        '''
+        this.reqQ.put( (cmd, args, kwargs) )
+    
+    def _gdbGet(this, timeout=None):
+        '''
+        get the next response from the queue
+        (Blocking)
+        '''
+        ztime = 10 if timeout == None else timeout
+        while True:
+            try: return this.respQ.get(True, ztime)
+            except queue.Empty: 
+                if timeout == None: continue
+                else: return None
+    
+ 
     def _process_command(this,cmd):
-        
+        '''
+        initial processing of a GDB client command
+        mostly just puts it on the outgoing queue
+        '''
         assert(len(cmd) > 0)
 
         cmdType = cmd[0]
@@ -166,20 +195,22 @@ class GdbRemote(object):
             this._unsupported(cmdType, subCmd)
         else: raise this.UnsupportedException( cmdType)
 
-    #
-    #
-    #
     def _unsupported(this, cmdType, subCmd):
+        '''
+        Generic unsupported message response
+        '''
         this.log.info("unsupported Type:" + str(cmdType))
         this.log.debug("SubCommand:" + str(subCmd))
         this.put("") #by-pass control thread
 
     
-    
-    #
-    #
-    #
     def _gdb_recv(this, conn):
+        '''
+        receives and formats incomming messages
+        @conn the connection to the gdb client 
+        @throws DisconnectException the connection is disconnected
+        @throws CtrlCException the message is 0x03 (CTRL-C)
+        '''
     
         while True:
             rawdata= conn.recv(1024)
@@ -238,10 +269,13 @@ class GdbRemote(object):
 
             return msg
 
-    #
-    #
-    #
     def _gdb_resp(this, conn, msg):
+        '''
+        takes a raw msg and formats it, and sends it over the connection
+        to the GDB client 
+
+        should not be used for '+' messages
+        '''
         # calc checksum
         chkSum = 0
         for c in msg:
@@ -260,7 +294,8 @@ class GdbRemote(object):
 
 class GdbCtrl(object):
     '''
-    The backend controller that impliments the GDB commands
+    The backend controller that actually impliments the GDB commands
+    on the PRC over MBus
     '''
 
     class PrcCtrl(object):
@@ -269,7 +304,9 @@ class GdbCtrl(object):
         '''
         
         class HaltMBusInterface(MBusInterface):
-            ''' Allows us to override the _callback function '''
+            ''' 
+            Overloads the MBus interface, allowing a special _callback
+            '''
             def __init__(this, halt, _ice, prc_addr, log_level):
                 super( halt.HaltMBusInterface, this).__init__(_ice, prc_addr,
                                                         log_level)
@@ -284,7 +321,10 @@ class GdbCtrl(object):
                     this.halt.queue.put( (mbus_addr, mbus_data) )
          
         class HaltRegFile(RegFile):
-            ''' Allows us to override the update_base_addr function '''
+            ''' 
+            Overloads the RegFile interface, 
+            allowing thread-safeness for base_addr updates
+            '''
             def __init__(this, halt, mbus, base_addr, writeback, log_level):
                 super(halt.HaltRegFile, this).__init__(mbus, base_addr, \
                                         writeback, log_level)
@@ -308,8 +348,11 @@ class GdbCtrl(object):
         def __init__(this, _ice, prc_addr, \
                                         log_level = logging.WARN):
             ''' 
-            Mostly a pass-through to MBUS, 
-            but starts a halt thread for out-of-band responses
+            Manages the PRC through MBus.  
+
+            Provides a memory and register file interface
+
+            Also starts a halt-monitoring thread for out-of-band halt responses
             '''
             this.log = m3_logging.getLogger( type(this).__name__)
             this.log.setLevel(log_level)
@@ -338,8 +381,12 @@ class GdbCtrl(object):
                                     log_level=log_level)
             this.log.debug("Created MBus/RF/Mem interfaces")
         
-        def getMem(this): return this.mem
-        def getRF(this): return this.rf
+        def getMem(this): 
+            ''' returns the PRC's memory abstraction'''
+            return this.mem
+        def getRF(this): 
+            ''' returns the (thread-safe) PRC's register abstraction'''
+            return this.rf
        
         def halt(this, halt_cb):
             '''
@@ -371,10 +418,14 @@ class GdbCtrl(object):
                 this.flag_addr = None
         
         def isHalted(this):
+            ''' returns true is the PRC is currently soft-halted '''
             return (this.flag_addr != None)
 
         def _halt_thread(this):
-
+            ''' 
+            halt management thread, waits for halt to be triggered, 
+            then calls halt_cb("S05") if halt_cb is valid 
+            '''
             while not this.stop.isSet():
                 try:  
                     mbus_addr, mbus_data = this.queue.get( True, 10)
@@ -398,7 +449,6 @@ class GdbCtrl(object):
                     print (e)
                     raise
                 
-
                 with this.lock: 
                     this.rf.update_base_addr(reg_addr)
                     this.flag_addr = flag_addr
@@ -418,15 +468,18 @@ class GdbCtrl(object):
        
         this.fe = frontend # the gdb frontend
         
+        # the processor interface, and it's memory + reg file
         this.prc= this.PrcCtrl( ice, prc_addr, log_level)
         this.mem = this.prc.getMem()
         this.rf = this.prc.getRF()
 
         this.svc_01 = 0xdf01 # asm("SVC #01")
+
         # were displaced instructions live
         # these have the form { (addr,size) : inst }
         this.displaced_insts = {} 
 
+        # try to import PyMulator (used to fake single-stepping)
         try:
             from PyMulator.PyMulator import PyMulator
             this.mulator = PyMulator(this.rf, this.mem,debug=True)
@@ -441,6 +494,7 @@ class GdbCtrl(object):
                         'lr', 'pc', 
                         'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7',                                 'fps', 
                         'xpsr', ]
+        # how much 0-padding to put in front of a register 
         this.regsPads= { 'r0':0, 'r1':0, 'r2':0, 'r3':0, 'r4':0, 
                         'r5':0, 'r6':0, 'r7':0, 'r8':0, 'r9':0, 
                         'r10':0, 'r11':0, 'r12':0, 'sp':0, 'lr':0, 
@@ -449,9 +503,7 @@ class GdbCtrl(object):
                         'f5':8, 'f6':8, 'f7':8, 'fps':0, 
                         'xpsr':0, }
 
-
         this.encode_str = { 4:'<I', 2:'<H', 1:'<B' }
-   
         
     def cmd__question_(this,):
         this.log.info("? Cmd")
@@ -491,7 +543,7 @@ class GdbCtrl(object):
         reg = this.regs[ reg]
         # fix endiananess, conver to int
         val = int(binascii.hexlify( binascii.unhexlify(val)[::-1]),16)
-        this.log.warn('register write :' + str(reg) + ' = ' + hex(val) )
+        this.log.info('register write :' + str(reg) + ' = ' + hex(val) )
         this.rf.forceWrite(reg,val)
         return "OK"
 
@@ -500,16 +552,17 @@ class GdbCtrl(object):
         return ""
 
     def cmd_Z(this, subcmd):
-        this.log.info("Breakpoint Set")
         args = subcmd.split(',')
         brType, addr, size = map(lambda x: int(x,16), args)
         assert(brType == 0)
         assert(size == 2)
-        this.log.info("Replacing instruction @" + \
+        this.log.info("Breakpoint Set, Type:" + str(brType) + \
+                                " Addr: " + hex(addr))
+        this.log.debug("Replacing instruction @" + \
                         hex(addr) + " with trap" )
         size *= 8 # convert to bits
         if (addr,size) in this.displaced_insts: 
-            this.log.info( hex(addr) + '('+str(size)+')' + \
+            this.log.debug( hex(addr) + '('+str(size)+')' + \
                 'already a soft-breakpoint')
         else:
             this.displaced_insts[(addr,size)] = \
@@ -535,11 +588,6 @@ class GdbCtrl(object):
 
     def cmd_k(this):
         this.log.info("kill")
-        if this.prc.isHalted(): 
-            this.log.warn('Caught Kill Command, resuming')
-            this.prc.resume() 
-        else:
-            this.log.warn('Caught Kill Command, doing nothing')
 
     def cmd_m(this, subcmd):
         assert(this.prc.isHalted()) 
@@ -651,12 +699,13 @@ class GdbCtrl(object):
         else: assert(False) 
 
     def cmd_z(this, subcmd):
-        this.log.info("Breakpoint Clear")
         args = subcmd.split(',')
         brType, addr, size = map(lambda x: int(x,16), args)
         assert(brType == 0)
         assert(size == 2)
-        this.log.info("Replacing trap with origional instruction @" +\
+        this.log.info("Breakpoint Clear, Type: " + str(brType) + \
+                        " Addr:" + hex(addr))
+        this.log.debug("Replacing trap with origional instruction @" +\
                         hex(addr) )
         size *= 8 # convert to bites                                
         if (addr,size) not in this.displaced_insts:
@@ -670,13 +719,14 @@ class GdbCtrl(object):
 
 
 
-
-
-   
 #
 #
 #
 class test_GdbCtrl(GdbCtrl):
+    ''' 
+    A testing interface for the GDB Server frontend
+    Just reports dummy values
+    '''
     
     def __init__(this):
 
