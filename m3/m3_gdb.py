@@ -516,6 +516,28 @@ class GdbCtrl(object):
         this.log.info("CTRL+C (HALT)")
         this.prc.halt( this.fe.put )
 
+    def cmd_D(this):
+        this.log.info("detach")
+
+        #halt the PRC if not already
+        if not this.prc.isHalted(): 
+            this.prc.halt(None)
+        while not this.prc.isHalted():
+            time.sleep(0.5)
+        
+        # remove all breakpoints, clear the table
+        this.log.debug('removing breakpoints')
+        for (addr,size) in this.displaced_insts:
+            orig_inst = this.displaced_insts[(addr,size)]
+            this.mem.forceWrite( (addr,size), orig_inst)
+        this.displaced_insts = {}
+        
+        #then resume the PRC
+        this.log.debug('resuming PRC')
+        this.prc.resume()
+        
+        return 'OK'
+
     def cmd_M(this, subcmd):
         preamble, data = subcmd.split(':')
         addr,size_bytes= preamble.split(',')
@@ -588,6 +610,8 @@ class GdbCtrl(object):
 
     def cmd_k(this):
         this.log.info("kill")
+        # just halt the PRC?  
+        this.prc.halt(None)
 
     def cmd_m(this, subcmd):
         assert(this.prc.isHalted()) 
@@ -752,6 +776,10 @@ class test_GdbCtrl(GdbCtrl):
         #hack for now...
         return this.cmd__question_()
 
+    def cmd_D(this):
+        this.log.info("detach")
+        return 'OK'
+
     def cmd_M(this, subcmd):
         preamble, data = subcmd.split(':')
         addr,size_bytes= preamble.split(',')
@@ -889,6 +917,7 @@ if __name__ == '__main__':
 
         if cmd == 'cmd__quit_': 
             print ('GDB CTRL Quiting')
+            ctrl.cmd_D()
             break
         else : 
             func = getattr(ctrl, cmd)
